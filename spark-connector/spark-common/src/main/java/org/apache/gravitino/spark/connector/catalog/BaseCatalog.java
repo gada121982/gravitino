@@ -371,10 +371,17 @@ public abstract class BaseCatalog implements TableCatalog, SupportsNamespaces, F
 
   @Override
   public String[][] listNamespaces(String[] namespace) throws NoSuchNamespaceException {
-    Preconditions.checkArgument(
-        namespace.length == 0,
-        "Doesn't support listing namespaces with " + String.join(".", namespace));
-    return listNamespaces();
+    if (namespace.length == 0) {
+      return listNamespaces();
+    }
+    // Gravitino only supports flat (1-level) namespaces.
+    // Verify the parent namespace exists, then return empty (no sub-namespaces).
+    try {
+      gravitinoCatalogClient.asSchemas().loadSchema(namespace[0]);
+    } catch (NoSuchSchemaException e) {
+      throw new NoSuchNamespaceException(namespace);
+    }
+    return new String[0][];
   }
 
   @Override
