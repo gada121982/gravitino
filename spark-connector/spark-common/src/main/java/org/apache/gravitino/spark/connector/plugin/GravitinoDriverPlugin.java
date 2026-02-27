@@ -40,11 +40,11 @@ import javax.annotation.Nullable;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.gravitino.Catalog;
 import org.apache.gravitino.auth.AuthProperties;
-import org.apache.gravitino.client.DefaultOAuth2TokenProvider;
 import org.apache.gravitino.client.GravitinoClient;
 import org.apache.gravitino.client.GravitinoClient.ClientBuilder;
 import org.apache.gravitino.client.GravitinoClientConfiguration;
 import org.apache.gravitino.client.KerberosTokenProvider;
+import org.apache.gravitino.client.SessionAwareOAuth2TokenProvider;
 import org.apache.gravitino.spark.connector.GravitinoSparkConfig;
 import org.apache.gravitino.spark.connector.catalog.GravitinoCatalogManager;
 import org.apache.gravitino.spark.connector.iceberg.extensions.GravitinoIcebergSparkSessionExtensions;
@@ -212,8 +212,8 @@ public class GravitinoDriverPlugin implements DriverPlugin {
           getRequiredConfig(sparkConf, GravitinoSparkConfig.GRAVITINO_OAUTH2_CREDENTIAL);
       String path = getRequiredConfig(sparkConf, GravitinoSparkConfig.GRAVITINO_OAUTH2_PATH);
       String scope = getRequiredConfig(sparkConf, GravitinoSparkConfig.GRAVITINO_OAUTH2_SCOPE);
-      DefaultOAuth2TokenProvider oAuth2TokenProvider =
-          DefaultOAuth2TokenProvider.builder()
+      SessionAwareOAuth2TokenProvider oAuth2TokenProvider =
+          SessionAwareOAuth2TokenProvider.builder()
               .withUri(oAuthUri)
               .withCredential(credential)
               .withPath(path)
