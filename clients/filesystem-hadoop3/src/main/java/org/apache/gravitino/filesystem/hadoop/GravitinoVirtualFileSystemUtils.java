@@ -39,7 +39,9 @@ import org.apache.gravitino.NameIdentifier;
 import org.apache.gravitino.audit.CallerContext;
 import org.apache.gravitino.client.DefaultOAuth2TokenProvider;
 import org.apache.gravitino.client.GravitinoClient;
+import org.apache.gravitino.client.GvfsSessionAwareOAuth2TokenProvider;
 import org.apache.gravitino.client.KerberosTokenProvider;
+import org.apache.gravitino.client.OAuth2TokenProvider;
 import org.apache.gravitino.credential.CredentialConstants;
 import org.apache.hadoop.conf.Configuration;
 
@@ -138,29 +140,34 @@ public class GravitinoVirtualFileSystemUtils {
           .withHeaders(requestHeaders)
           .withClientConfig(clientConfig)
           .build();
-    } else if (authType.equalsIgnoreCase(
-        GravitinoVirtualFileSystemConfiguration.OAUTH2_AUTH_TYPE)) {
+    } else if (authType.equalsIgnoreCase(GravitinoVirtualFileSystemConfiguration.OAUTH2_AUTH_TYPE)
+        || authType.equalsIgnoreCase(
+            GravitinoVirtualFileSystemConfiguration.SESSION_OAUTH2_AUTH_TYPE)) {
       String authServerUri =
           configuration.get(
               GravitinoVirtualFileSystemConfiguration.FS_GRAVITINO_CLIENT_OAUTH2_SERVER_URI_KEY);
       checkAuthConfig(
-          GravitinoVirtualFileSystemConfiguration.OAUTH2_AUTH_TYPE,
+          authType,
           GravitinoVirtualFileSystemConfiguration.FS_GRAVITINO_CLIENT_OAUTH2_SERVER_URI_KEY,
           authServerUri);
 
       String credential =
           configuration.get(
               GravitinoVirtualFileSystemConfiguration.FS_GRAVITINO_CLIENT_OAUTH2_CREDENTIAL_KEY);
-      checkAuthConfig(
-          GravitinoVirtualFileSystemConfiguration.OAUTH2_AUTH_TYPE,
-          GravitinoVirtualFileSystemConfiguration.FS_GRAVITINO_CLIENT_OAUTH2_CREDENTIAL_KEY,
-          credential);
+      // session-oauth2 resolves credential from the active SparkSession per-user; a static
+      // credential here is only an optional fallback. Plain oauth2 still requires it.
+      if (authType.equalsIgnoreCase(GravitinoVirtualFileSystemConfiguration.OAUTH2_AUTH_TYPE)) {
+        checkAuthConfig(
+            authType,
+            GravitinoVirtualFileSystemConfiguration.FS_GRAVITINO_CLIENT_OAUTH2_CREDENTIAL_KEY,
+            credential);
+      }
 
       String path =
           configuration.get(
               GravitinoVirtualFileSystemConfiguration.FS_GRAVITINO_CLIENT_OAUTH2_PATH_KEY);
       checkAuthConfig(
-          GravitinoVirtualFileSystemConfiguration.OAUTH2_AUTH_TYPE,
+          authType,
           GravitinoVirtualFileSystemConfiguration.FS_GRAVITINO_CLIENT_OAUTH2_PATH_KEY,
           path);
 
@@ -168,17 +175,29 @@ public class GravitinoVirtualFileSystemUtils {
           configuration.get(
               GravitinoVirtualFileSystemConfiguration.FS_GRAVITINO_CLIENT_OAUTH2_SCOPE_KEY);
       checkAuthConfig(
-          GravitinoVirtualFileSystemConfiguration.OAUTH2_AUTH_TYPE,
+          authType,
           GravitinoVirtualFileSystemConfiguration.FS_GRAVITINO_CLIENT_OAUTH2_SCOPE_KEY,
           scope);
 
-      DefaultOAuth2TokenProvider authDataProvider =
-          DefaultOAuth2TokenProvider.builder()
-              .withUri(authServerUri)
-              .withCredential(credential)
-              .withPath(path)
-              .withScope(scope)
-              .build();
+      OAuth2TokenProvider authDataProvider;
+      if (authType.equalsIgnoreCase(
+          GravitinoVirtualFileSystemConfiguration.SESSION_OAUTH2_AUTH_TYPE)) {
+        authDataProvider =
+            GvfsSessionAwareOAuth2TokenProvider.builder()
+                .withUri(authServerUri)
+                .withCredential(credential)
+                .withPath(path)
+                .withScope(scope)
+                .build();
+      } else {
+        authDataProvider =
+            DefaultOAuth2TokenProvider.builder()
+                .withUri(authServerUri)
+                .withCredential(credential)
+                .withPath(path)
+                .withScope(scope)
+                .build();
+      }
 
       return GravitinoClient.builder(serverUri)
           .withMetalake(metalakeValue)
