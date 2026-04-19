@@ -51,6 +51,15 @@ public class GravitinoVirtualFileSystemConfiguration {
   /** The authentication type for oauth2 authentication. */
   public static final String OAUTH2_AUTH_TYPE = "oauth2";
 
+  /**
+   * The authentication type for session-aware oauth2 authentication. Uses {@code
+   * org.apache.gravitino.client.GvfsSessionAwareOAuth2TokenProvider} to resolve per-user credential
+   * from the active SparkSession, enabling multi-tenant RBAC in shared Spark engines (Kyuubi GROUP
+   * share level, Spark Connect). Falls back to the static credential when no active SparkSession is
+   * present.
+   */
+  public static final String SESSION_OAUTH2_AUTH_TYPE = "session-oauth2";
+
   /** The authentication type for kerberos authentication. */
   public static final String KERBEROS_AUTH_TYPE = "kerberos";
 
