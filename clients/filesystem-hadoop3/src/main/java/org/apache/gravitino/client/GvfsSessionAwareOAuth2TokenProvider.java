@@ -50,7 +50,8 @@ import org.slf4j.LoggerFactory;
  */
 public class GvfsSessionAwareOAuth2TokenProvider extends OAuth2TokenProvider {
 
-  private static final Logger LOG = LoggerFactory.getLogger(GvfsSessionAwareOAuth2TokenProvider.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(GvfsSessionAwareOAuth2TokenProvider.class);
 
   // Config/property key written by CatalogSyncExtension to BOTH SparkSession.conf (driver-side) and
   // sparkContext.setLocalProperty (propagates to executor via TaskContext). Reusing the same key
@@ -132,8 +133,7 @@ public class GvfsSessionAwareOAuth2TokenProvider extends OAuth2TokenProvider {
     // the Spark Connect path above takes precedence at runtime.
     String sparkSessionCredential = resolveFromSparkSession();
     if (StringUtils.isNotBlank(sparkSessionCredential)) {
-      LOG.info(
-          "[thread={}] resolved via SparkSession.conf", Thread.currentThread().getName());
+      LOG.info("[thread={}] resolved via SparkSession.conf", Thread.currentThread().getName());
       return sparkSessionCredential;
     }
 
