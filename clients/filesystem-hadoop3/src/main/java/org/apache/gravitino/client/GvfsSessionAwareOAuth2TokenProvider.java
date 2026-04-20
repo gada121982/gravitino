@@ -24,13 +24,23 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.apache.commons.lang3.StringUtils;
 
 /**
- * Session-aware OAuth2 token provider for GVFS. Resolves per-user OAuth2 credential from the active
- * SparkSession (set by gravitino-catalog-sync at session start), and falls back to the shared
- * credential otherwise.
+ * Session-aware OAuth2 token provider for GVFS. Resolves per-user OAuth2 credential with the
+ * following precedence:
  *
- * <p>Mirrors {@link SessionAwareOAuth2TokenProvider} (used by the Spark SQL connector), but the
- * filesystem-hadoop3 module cannot depend on Spark. Reflection is used to read SparkSession so this
- * provider stays safe to load in non-Spark environments (plain Hadoop, Flink, Trino, etc.).
+ * <ol>
+ *   <li>Spark {@code TaskContext} local property — works on the executor because Spark serializes
+ *       local properties into each {@code TaskDescription}. This is the ONLY channel that
+ *       propagates per-user state from driver to executor without leaking into JVM-global Hadoop
+ *       conf (which would race between concurrent users in a shared engine).
+ *   <li>Active {@code SparkSession} runtime conf — works on the driver, where {@code
+ *       CatalogSyncExtension} wrote the credential via {@code session.conf.set}.
+ *   <li>Shared credential from builder — optional fallback, typically empty to force fail-fast
+ *       instead of silent admin impersonation.
+ * </ol>
+ *
+ * <p>The filesystem-hadoop3 module cannot depend on Spark, so both Spark classes are loaded via
+ * reflection. This keeps the provider safe to load in non-Spark environments (plain Hadoop, Flink,
+ * Trino, etc.) where only the shared-credential fallback applies.
  *
  * <p>Wiring: set {@code fs.gravitino.client.authType=session-oauth2} in Hadoop/Spark conf; {@link
  * org.apache.gravitino.filesystem.hadoop.GravitinoVirtualFileSystemUtils} will build the
@@ -38,8 +48,9 @@ import org.apache.commons.lang3.StringUtils;
  */
 public class GvfsSessionAwareOAuth2TokenProvider extends OAuth2TokenProvider {
 
-  // Config key read from SparkSession per-session — CatalogSyncExtension writes it after resolving
-  // the IAM user. Reusing the same key means SQL and GVFS share one per-user credential.
+  // Config/property key written by CatalogSyncExtension to BOTH SparkSession.conf (driver-side) and
+  // sparkContext.setLocalProperty (propagates to executor via TaskContext). Reusing the same key
+  // means SQL and GVFS share one per-user credential on both sides of the driver/executor boundary.
   private static final String SESSION_CREDENTIAL_KEY = "spark.sql.gravitino.oauth2.credential";
 
   private String sharedCredential;
@@ -59,6 +70,9 @@ public class GvfsSessionAwareOAuth2TokenProvider extends OAuth2TokenProvider {
       // Fail-fast: no per-user credential in SparkSession and no shared fallback configured.
       // Returning null would make Gravitino silently use admin identity — refuse instead so
       // RBAC cannot be bypassed when session wiring is broken or called from non-Spark code.
+      System.err.println(
+          "[GvfsSessionAwareOAuth2TokenProvider] WARN no credential from TaskContext, "
+              + "CREDENTIAL_STORE, or SparkSession — throwing SecurityException");
       throw new SecurityException(
           "GvfsSessionAwareOAuth2TokenProvider: no per-user OAuth2 credential available "
               + "(spark.sql.gravitino.oauth2.credential not set in active SparkSession and no "
@@ -77,24 +91,155 @@ public class GvfsSessionAwareOAuth2TokenProvider extends OAuth2TokenProvider {
   }
 
   private String resolveCredential() {
+    // Executor path: TaskContext.getLocalProperty is how Spark propagates per-job state from
+    // driver to executor (see SparkContext.setLocalProperty). On executor SparkSession.active()
+    // returns a driver-less stub with no runtime conf, so this is the only reliable channel.
+    String taskContextCredential = resolveFromTaskContext();
+    if (StringUtils.isNotBlank(taskContextCredential)) {
+      System.err.println("[GvfsSessionAwareOAuth2TokenProvider] INFO resolved via TaskContext");
+      return taskContextCredential;
+    }
+
+    // Spark Connect driver path: the auth interceptor populates a session-keyed store on the
+    // first gRPC message. We consult it BEFORE SparkSession.conf because SparkConf holds an
+    // admin-level bootstrap credential needed by GravitinoDriverPlugin at SparkContext init —
+    // reading session.conf first would therefore always return the admin fallback even when a
+    // per-user credential has already been resolved for this session. This path is also the
+    // only way to get the per-user identity for DataFrame / RDD / raw FS operations that never
+    // trigger CatalogSyncExtension.
+    String interceptorCredential = resolveFromSparkConnectStore();
+    if (StringUtils.isNotBlank(interceptorCredential)) {
+      System.err.println(
+          "[GvfsSessionAwareOAuth2TokenProvider] INFO resolved via SparkConnect CREDENTIAL_STORE");
+      return interceptorCredential;
+    }
+
+    // Driver path for Kyuubi (IdentitySessionConfAdvisor overlays the credential at session open,
+    // overriding the admin default) and SQL queries in Spark Connect (CatalogSyncExtension writes
+    // it on first parsePlan). May fall back to the admin bootstrap credential if the per-user
+    // resolve hasn't happened yet — this is acceptable at plugin init time but is exactly why
+    // the Spark Connect path above takes precedence at runtime.
+    String sparkSessionCredential = resolveFromSparkSession();
+    if (StringUtils.isNotBlank(sparkSessionCredential)) {
+      System.err.println(
+          "[GvfsSessionAwareOAuth2TokenProvider] INFO resolved via SparkSession.conf");
+      return sparkSessionCredential;
+    }
+
+    // Non-Spark callers or misconfigured sessions: sharedCredential is usually null so that
+    // getAccessToken() fails fast instead of silently vending an admin token.
+    if (StringUtils.isNotBlank(sharedCredential)) {
+      System.err.println(
+          "[GvfsSessionAwareOAuth2TokenProvider] INFO resolved via sharedCredential fallback");
+    }
+    return sharedCredential;
+  }
+
+  private String resolveFromTaskContext() {
+    try {
+      Class<?> taskContextClass = Class.forName("org.apache.spark.TaskContext");
+      Object taskContext = taskContextClass.getMethod("get").invoke(null);
+      if (taskContext == null) {
+        // Running on the driver (or in a thread with no TaskContext). Fall through to SparkSession.
+        return null;
+      }
+      return (String)
+          taskContext
+              .getClass()
+              .getMethod("getLocalProperty", String.class)
+              .invoke(taskContext, SESSION_CREDENTIAL_KEY);
+    } catch (Throwable e) {
+      // No Spark on classpath, or incompatible Spark version. Fall through silently so non-Spark
+      // environments keep working with sharedCredential.
+      return null;
+    }
+  }
+
+  private String resolveFromSparkSession() {
     try {
       Class<?> sparkSessionClass = Class.forName("org.apache.spark.sql.SparkSession");
       Object session = sparkSessionClass.getMethod("active").invoke(null);
       Object runtimeConf = session.getClass().getMethod("conf").invoke(session);
-      String sessionCredential =
-          (String)
-              runtimeConf
-                  .getClass()
-                  .getMethod("get", String.class, String.class)
-                  .invoke(runtimeConf, SESSION_CREDENTIAL_KEY, sharedCredential);
-      if (StringUtils.isNotBlank(sessionCredential)) {
-        return sessionCredential;
-      }
+      return (String)
+          runtimeConf
+              .getClass()
+              .getMethod("get", String.class, String.class)
+              .invoke(runtimeConf, SESSION_CREDENTIAL_KEY, sharedCredential);
     } catch (Throwable e) {
-      // No active SparkSession (e.g. non-Spark GVFS usage). sharedCredential may still be null —
-      // getAccessToken() will throw SecurityException in that case to avoid silent admin fallback.
+      // No active SparkSession (e.g. non-Spark GVFS usage or executor without driver pointer).
+      return null;
     }
-    return sharedCredential;
+  }
+
+  /**
+   * Read the per-user credential from SparkConnectAuthInterceptor.CREDENTIAL_STORE by discovering
+   * the current Spark Connect session id through the active SparkContext's job tags.
+   *
+   * <p>All reflection — SparkConnectAuthInterceptor lives in a separate extension module
+   * (spark-connect-auth) that is optional on the classpath. Missing class means we're in Kyuubi /
+   * plain Spark / non-Spark usage and this resolver is a no-op.
+   *
+   * <p>Only meaningful on the driver. Executors should never hit this path because the credential
+   * should already be in TaskContext via SparkContext.setLocalProperty when the task was launched.
+   */
+  private String resolveFromSparkConnectStore() {
+    try {
+      Class<?> interceptorClass = Class.forName("com.example.SparkConnectAuthInterceptor$");
+      Object module = interceptorClass.getField("MODULE$").get(null);
+      Object store = interceptorClass.getMethod("CREDENTIAL_STORE").invoke(module);
+      if (store == null) {
+        return null;
+      }
+      @SuppressWarnings("unchecked")
+      java.util.concurrent.ConcurrentHashMap<String, String> credentialStore =
+          (java.util.concurrent.ConcurrentHashMap<String, String>) store;
+      if (credentialStore.isEmpty()) {
+        return null;
+      }
+
+      // Spark Connect tags jobs with "spark.job.tags" = "<sessionId>,<...>". Scan the tag value
+      // against the store keys so future tag-format changes don't break this. Reading the tag
+      // requires SparkSession.active(), which throws / returns null on worker threads that
+      // aren't Spark tasks (e.g. the ForkJoinPool threads Hadoop FS calls run on in Spark
+      // Connect). Wrap that lookup in its own try so failure here doesn't block the
+      // single-session fallback below.
+      String credential = null;
+      try {
+        Class<?> sparkSessionClass = Class.forName("org.apache.spark.sql.SparkSession");
+        Object session = sparkSessionClass.getMethod("active").invoke(null);
+        if (session != null) {
+          Object sc = session.getClass().getMethod("sparkContext").invoke(session);
+          String tags =
+              (String)
+                  sc.getClass()
+                      .getMethod("getLocalProperty", String.class)
+                      .invoke(sc, "spark.job.tags");
+          if (tags != null && !tags.isEmpty()) {
+            for (java.util.Map.Entry<String, String> entry : credentialStore.entrySet()) {
+              if (tags.contains(entry.getKey())) {
+                credential = entry.getValue();
+                break;
+              }
+            }
+          }
+        }
+      } catch (Throwable ignore) {
+        // No active SparkSession on this thread, or Spark Connect internals changed. Keep
+        // credential=null and let the single-session fallback try next.
+      }
+
+      // Single-session fallback: per-workspace Spark Connect pods typically have one active
+      // session at a time, so if the tag-match path doesn't find anything but exactly one
+      // credential is cached, that's the one to use. Also the primary path on threads with
+      // no SparkSession available (e.g. ForkJoinPool workers driving Hadoop FS).
+      if (credential == null && credentialStore.size() == 1) {
+        credential = credentialStore.values().iterator().next();
+      }
+
+      return credential;
+    } catch (Throwable e) {
+      return null;
+    }
   }
 
   public static Builder builder() {
