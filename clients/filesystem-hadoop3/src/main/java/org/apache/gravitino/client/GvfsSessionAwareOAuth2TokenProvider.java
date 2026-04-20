@@ -22,6 +22,8 @@ import com.google.common.base.Preconditions;
 import java.util.Collections;
 import java.util.concurrent.ConcurrentHashMap;
 import org.apache.commons.lang3.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Session-aware OAuth2 token provider for GVFS. Resolves per-user OAuth2 credential with the
@@ -48,10 +50,12 @@ import org.apache.commons.lang3.StringUtils;
  */
 public class GvfsSessionAwareOAuth2TokenProvider extends OAuth2TokenProvider {
 
+  private static final Logger LOG = LoggerFactory.getLogger(GvfsSessionAwareOAuth2TokenProvider.class);
+
   // Config/property key written by CatalogSyncExtension to BOTH SparkSession.conf (driver-side) and
   // sparkContext.setLocalProperty (propagates to executor via TaskContext). Reusing the same key
   // means SQL and GVFS share one per-user credential on both sides of the driver/executor boundary.
-  private static final String SESSION_CREDENTIAL_KEY = "spark.sql.gravitino.oauth2.credential";
+  public static final String SESSION_CREDENTIAL_KEY = "spark.sql.gravitino.oauth2.credential";
 
   private String sharedCredential;
   private String scope;
@@ -70,9 +74,9 @@ public class GvfsSessionAwareOAuth2TokenProvider extends OAuth2TokenProvider {
       // Fail-fast: no per-user credential in SparkSession and no shared fallback configured.
       // Returning null would make Gravitino silently use admin identity — refuse instead so
       // RBAC cannot be bypassed when session wiring is broken or called from non-Spark code.
-      System.err.println(
-          "[GvfsSessionAwareOAuth2TokenProvider] WARN no credential from TaskContext, "
-              + "CREDENTIAL_STORE, or SparkSession — throwing SecurityException");
+      LOG.warn(
+          "[thread={}] no credential from TaskContext, CREDENTIAL_STORE, or SparkSession — throwing SecurityException",
+          Thread.currentThread().getName());
       throw new SecurityException(
           "GvfsSessionAwareOAuth2TokenProvider: no per-user OAuth2 credential available "
               + "(spark.sql.gravitino.oauth2.credential not set in active SparkSession and no "
@@ -96,7 +100,7 @@ public class GvfsSessionAwareOAuth2TokenProvider extends OAuth2TokenProvider {
     // returns a driver-less stub with no runtime conf, so this is the only reliable channel.
     String taskContextCredential = resolveFromTaskContext();
     if (StringUtils.isNotBlank(taskContextCredential)) {
-      System.err.println("[GvfsSessionAwareOAuth2TokenProvider] INFO resolved via TaskContext");
+      LOG.info("[thread={}] resolved via TaskContext", Thread.currentThread().getName());
       return taskContextCredential;
     }
 
@@ -109,8 +113,9 @@ public class GvfsSessionAwareOAuth2TokenProvider extends OAuth2TokenProvider {
     // trigger CatalogSyncExtension.
     String interceptorCredential = resolveFromSparkConnectStore();
     if (StringUtils.isNotBlank(interceptorCredential)) {
-      System.err.println(
-          "[GvfsSessionAwareOAuth2TokenProvider] INFO resolved via SparkConnect CREDENTIAL_STORE");
+      LOG.info(
+          "[thread={}] resolved via SparkConnect CREDENTIAL_STORE",
+          Thread.currentThread().getName());
       // Spark propagates local properties to executor TaskContext at job submission. The
       // CatalogSyncExtension normally sets this during SQL parse, but pure DataFrame reads/writes
       // (spark.read.parquet, df.write.parquet) never trigger the parser. Mirroring here — on the
@@ -127,16 +132,17 @@ public class GvfsSessionAwareOAuth2TokenProvider extends OAuth2TokenProvider {
     // the Spark Connect path above takes precedence at runtime.
     String sparkSessionCredential = resolveFromSparkSession();
     if (StringUtils.isNotBlank(sparkSessionCredential)) {
-      System.err.println(
-          "[GvfsSessionAwareOAuth2TokenProvider] INFO resolved via SparkSession.conf");
+      LOG.info(
+          "[thread={}] resolved via SparkSession.conf", Thread.currentThread().getName());
       return sparkSessionCredential;
     }
 
     // Non-Spark callers or misconfigured sessions: sharedCredential is usually null so that
     // getAccessToken() fails fast instead of silently vending an admin token.
     if (StringUtils.isNotBlank(sharedCredential)) {
-      System.err.println(
-          "[GvfsSessionAwareOAuth2TokenProvider] INFO resolved via sharedCredential fallback");
+      LOG.warn(
+          "[thread={}] resolved via sharedCredential admin fallback — RBAC is NOT per-user",
+          Thread.currentThread().getName());
     }
     return sharedCredential;
   }
@@ -149,13 +155,53 @@ public class GvfsSessionAwareOAuth2TokenProvider extends OAuth2TokenProvider {
         return;
       }
       Object sparkContext = session.getClass().getMethod("sparkContext").invoke(session);
+      // Idempotent: skip setLocalProperty if current value already matches. Avoids log noise and
+      // avoids re-writing InheritableThreadLocal when GVFS is called repeatedly on the same thread
+      // within one query (e.g. first resolveRelation then RDD job submit).
+      String existing =
+          (String)
+              sparkContext
+                  .getClass()
+                  .getMethod("getLocalProperty", String.class)
+                  .invoke(sparkContext, SESSION_CREDENTIAL_KEY);
+      if (credential.equals(existing)) {
+        return;
+      }
       sparkContext
           .getClass()
           .getMethod("setLocalProperty", String.class, String.class)
           .invoke(sparkContext, SESSION_CREDENTIAL_KEY, credential);
+      LOG.debug(
+          "[thread={}] published credential to sparkContext.localProperty",
+          Thread.currentThread().getName());
     } catch (Throwable ignore) {
       // Best-effort. If Spark classes are missing or we're on a non-driver thread without an
       // active SparkSession, executors that need this will still throw via resolveFromTaskContext.
+    }
+  }
+
+  /**
+   * Clear the per-user credential from the active SparkContext's local property on the current
+   * thread. Call from {@code QueryExecutionListener.onSuccess/onFailure} after a query finishes so
+   * the ExecuteThread returns to the pool without leaking credential to the next user's request.
+   *
+   * <p>Public + static + reflection-safe by design: the cleanup listener lives in a separate Scala
+   * extension module that should not hard-depend on this provider class.
+   */
+  public static void clearFromSparkContext() {
+    try {
+      Class<?> sparkSessionClass = Class.forName("org.apache.spark.sql.SparkSession");
+      Object session = sparkSessionClass.getMethod("active").invoke(null);
+      if (session == null) {
+        return;
+      }
+      Object sparkContext = session.getClass().getMethod("sparkContext").invoke(session);
+      sparkContext
+          .getClass()
+          .getMethod("setLocalProperty", String.class, String.class)
+          .invoke(sparkContext, SESSION_CREDENTIAL_KEY, null);
+    } catch (Throwable ignore) {
+      // Best-effort cleanup.
     }
   }
 
