@@ -20,6 +20,7 @@
 package org.apache.gravitino.spark.connector.catalog;
 
 import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -67,8 +68,6 @@ import org.apache.spark.sql.connector.expressions.Transform;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.util.CaseInsensitiveStringMap;
-
-import com.google.common.collect.ImmutableSet;
 
 /**
  * BaseCatalog acts as the foundational class for Apache Spark CatalogManager registration, enabling
@@ -262,8 +261,8 @@ public abstract class BaseCatalog implements TableCatalog, SupportsNamespaces, F
    * names)} requires exactly 3 name parts (catalog.schema.table) — the path gets counted as one
    * name, so the check throws {@code IllegalArgumentException}.
    *
-   * <p>By short-circuiting with {@code NoSuchTableException} here, the Spark analyzer falls back
-   * to its DataSource shortcut resolution and builds a {@code HadoopFsRelation} directly.
+   * <p>By short-circuiting with {@code NoSuchTableException} here, the Spark analyzer falls back to
+   * its DataSource shortcut resolution and builds a {@code HadoopFsRelation} directly.
    */
   private static final ImmutableSet<String> BUILTIN_DATASOURCE_FORMATS =
       ImmutableSet.of("parquet", "csv", "json", "orc", "text", "avro", "binaryFile");
