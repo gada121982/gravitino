@@ -111,6 +111,12 @@ public class GvfsSessionAwareOAuth2TokenProvider extends OAuth2TokenProvider {
     if (StringUtils.isNotBlank(interceptorCredential)) {
       System.err.println(
           "[GvfsSessionAwareOAuth2TokenProvider] INFO resolved via SparkConnect CREDENTIAL_STORE");
+      // Spark propagates local properties to executor TaskContext at job submission. The
+      // CatalogSyncExtension normally sets this during SQL parse, but pure DataFrame reads/writes
+      // (spark.read.parquet, df.write.parquet) never trigger the parser. Mirroring here — on the
+      // same driver thread that's about to submit the job — is the only way executor tasks get
+      // the credential without relying on the extension firing first.
+      publishToSparkContext(interceptorCredential);
       return interceptorCredential;
     }
 
@@ -133,6 +139,24 @@ public class GvfsSessionAwareOAuth2TokenProvider extends OAuth2TokenProvider {
           "[GvfsSessionAwareOAuth2TokenProvider] INFO resolved via sharedCredential fallback");
     }
     return sharedCredential;
+  }
+
+  private void publishToSparkContext(String credential) {
+    try {
+      Class<?> sparkSessionClass = Class.forName("org.apache.spark.sql.SparkSession");
+      Object session = sparkSessionClass.getMethod("active").invoke(null);
+      if (session == null) {
+        return;
+      }
+      Object sparkContext = session.getClass().getMethod("sparkContext").invoke(session);
+      sparkContext
+          .getClass()
+          .getMethod("setLocalProperty", String.class, String.class)
+          .invoke(sparkContext, SESSION_CREDENTIAL_KEY, credential);
+    } catch (Throwable ignore) {
+      // Best-effort. If Spark classes are missing or we're on a non-driver thread without an
+      // active SparkSession, executors that need this will still throw via resolveFromTaskContext.
+    }
   }
 
   private String resolveFromTaskContext() {
