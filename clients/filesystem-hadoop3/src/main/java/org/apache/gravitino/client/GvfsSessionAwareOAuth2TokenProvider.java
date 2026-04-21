@@ -221,8 +221,8 @@ public class GvfsSessionAwareOAuth2TokenProvider extends OAuth2TokenProvider {
         return null;
       }
       @SuppressWarnings("unchecked")
-      java.util.concurrent.ConcurrentHashMap<String, String> credentialStore =
-          (java.util.concurrent.ConcurrentHashMap<String, String>) store;
+      java.util.concurrent.ConcurrentMap<String, String> credentialStore =
+          (java.util.concurrent.ConcurrentMap<String, String>) store;
       if (credentialStore.isEmpty()) {
         return null;
       }
