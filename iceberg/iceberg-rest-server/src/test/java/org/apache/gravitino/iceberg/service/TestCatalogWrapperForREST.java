@@ -587,7 +587,7 @@ public class TestCatalogWrapperForREST {
                 "/tmp/warehouse"));
     CatalogWrapperForREST wrapper = new StaticCatalogWrapperForREST("irc1", config, catalog);
 
-    LoadTableResponse response = wrapper.loadTable(ident, false, CredentialPrivilege.READ);
+    LoadTableResponse response = wrapper.loadTable(ident, false, false, CredentialPrivilege.READ);
 
     Assertions.assertEquals(
         "v1/irc1/namespaces/db/tables/tbl/credentials",
@@ -643,7 +643,7 @@ public class TestCatalogWrapperForREST {
                 "/tmp/warehouse"));
     CatalogWrapperForREST wrapper = new StaticCatalogWrapperForREST("irc1", config, catalog);
 
-    LoadTableResponse response = wrapper.loadTable(ident, false, CredentialPrivilege.READ);
+    LoadTableResponse response = wrapper.loadTable(ident, false, false, CredentialPrivilege.READ);
 
     Assertions.assertEquals(1, response.credentials().size());
     Credential credential = response.credentials().get(0);
@@ -773,12 +773,49 @@ public class TestCatalogWrapperForREST {
             .metadataLocation("s3://bucket/warehouse/tbl/metadata/v1.metadata.json")
             .build();
 
-    LoadTableResponse response = wrapper.registerTable(Namespace.of("db"), request, false);
+    LoadTableResponse response = wrapper.registerTable(Namespace.of("db"), request, false, false);
 
     Assertions.assertEquals(
         "org.apache.iceberg.aws.s3.S3FileIO", response.config().get(IcebergConstants.IO_IMPL));
     Assertions.assertEquals(
         "http://localhost:9000", response.config().get(IcebergConstants.ICEBERG_S3_ENDPOINT));
+  }
+
+  @Test
+  void testFederatedRegisterTableOverwrite() {
+    RESTCatalog catalog = mock(RESTCatalog.class);
+    BaseTable table = mock(BaseTable.class);
+    TableOperations ops = mock(TableOperations.class);
+    FileIO fileIO = mock(FileIO.class);
+    TableIdentifier ident = TableIdentifier.of("db", "tbl");
+    when(catalog.registerTable(any(TableIdentifier.class), anyString(), anyBoolean()))
+        .thenReturn(table);
+    when(catalog.loadTable(ident)).thenReturn(table);
+    when(table.operations()).thenReturn(ops);
+    when(ops.current()).thenReturn(minimalTableMetadataForStagedCreateTest());
+    when(table.io()).thenReturn(fileIO);
+    when(fileIO.properties()).thenReturn(ImmutableMap.of());
+
+    IcebergConfig config =
+        new IcebergConfig(
+            ImmutableMap.of(
+                IcebergConstants.CATALOG_BACKEND,
+                "memory",
+                IcebergConstants.WAREHOUSE,
+                "/tmp/warehouse"));
+    CatalogWrapperForREST wrapper = new StaticCatalogWrapperForREST("test", config, catalog);
+
+    RegisterTableRequest request =
+        ImmutableRegisterTableRequest.builder()
+            .name("tbl")
+            .metadataLocation("s3://bucket/warehouse/tbl/metadata/v2.metadata.json")
+            .overwrite(true)
+            .build();
+
+    wrapper.registerTable(Namespace.of("db"), request, false, false);
+
+    verify(catalog).registerTable(ident, request.metadataLocation(), true);
+    verify(catalog).loadTable(ident);
   }
 
   @Test
@@ -841,7 +878,7 @@ public class TestCatalogWrapperForREST {
             .stageCreate()
             .build();
 
-    LoadTableResponse response = wrapper.createTable(Namespace.of("db"), request, false);
+    LoadTableResponse response = wrapper.createTable(Namespace.of("db"), request, false, false);
 
     Assertions.assertEquals(
         "org.apache.iceberg.aws.s3.S3FileIO", response.config().get(IcebergConstants.IO_IMPL));
@@ -886,7 +923,7 @@ public class TestCatalogWrapperForREST {
     CreateTableRequest request =
         CreateTableRequest.builder().withName("tbl").withSchema(schema).stageCreate().build();
 
-    LoadTableResponse response = wrapper.createTable(Namespace.of("db"), request, false);
+    LoadTableResponse response = wrapper.createTable(Namespace.of("db"), request, false, false);
 
     Assertions.assertEquals(
         "org.apache.iceberg.aws.s3.S3FileIO", response.config().get(IcebergConstants.IO_IMPL));
