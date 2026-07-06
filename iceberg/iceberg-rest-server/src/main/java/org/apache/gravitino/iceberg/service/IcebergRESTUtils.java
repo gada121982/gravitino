@@ -418,7 +418,16 @@ public class IcebergRESTUtils {
    * @return the resolved metalake and catalog
    */
   public static MetalakeCatalog parseMetalakeCatalog(String rawPrefix) {
-    String prefix = getCatalogName(rawPrefix);
+    // Tolerate both a raw prefix (Jetty passes it ending in '/') and an already-normalized
+    // catalogName (DynamicIcebergConfigProvider passes the stripped value), so this can be called
+    // from both the REST resource/authz path and the config-provider path.
+    String prefix = StringUtils.isBlank(rawPrefix) ? "" : rawPrefix;
+    if (prefix.endsWith("/")) {
+      prefix = prefix.substring(0, prefix.length() - 1);
+    }
+    if (StringUtils.isBlank(prefix)) {
+      prefix = IcebergRESTServerContext.getInstance().defaultCatalogName();
+    }
     int delimiter = prefix.indexOf(METALAKE_CATALOG_DELIMITER);
     if (delimiter > 0 && delimiter < prefix.length() - 1) {
       return new MetalakeCatalog(prefix.substring(0, delimiter), prefix.substring(delimiter + 1));
