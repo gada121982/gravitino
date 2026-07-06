@@ -244,7 +244,8 @@ public class FederatedCatalogWrapper extends CatalogWrapperForREST {
         try {
           authSession.close();
         } catch (Exception e) {
-          LOG.warn("Failed to close auth session when resolving signer endpoint: {}", identifier, e);
+          LOG.warn(
+              "Failed to close auth session when resolving signer endpoint: {}", identifier, e);
         }
       }
       if (client != null) {
@@ -258,7 +259,8 @@ public class FederatedCatalogWrapper extends CatalogWrapperForREST {
         try {
           authManager.close();
         } catch (Exception e) {
-          LOG.warn("Failed to close auth manager when resolving signer endpoint: {}", identifier, e);
+          LOG.warn(
+              "Failed to close auth manager when resolving signer endpoint: {}", identifier, e);
         }
       }
     }
