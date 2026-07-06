@@ -467,8 +467,8 @@ public class FederatedCatalogWrapper extends CatalogWrapperForREST {
   }
 
   /**
-   * Injects vended credentials extracted from the remote catalog's {@link FileIO} into a
-   * load-table response.
+   * Injects vended credentials extracted from the remote catalog's {@link FileIO} into a load-table
+   * response.
    */
   private LoadTableResponse injectRemoteCatalogCredentialConfig(
       TableIdentifier ident,
