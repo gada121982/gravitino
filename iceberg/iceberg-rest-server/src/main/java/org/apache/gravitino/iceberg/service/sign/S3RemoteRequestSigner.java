@@ -49,6 +49,13 @@ import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 /** Signs S3 HTTP requests for Iceberg REST remote-signing. */
 public class S3RemoteRequestSigner implements RemoteRequestSigner {
 
+  // Iceberg's RESTCatalogProperties.SIGNER_ENDPOINT is "signer.endpoint" (Iceberg 1.11+, which
+  // Gravitino builds against). Older S3 signer clients (e.g. iceberg-aws 1.10.x bundled in the
+  // Spark 3.5 images) read the S3-namespaced "s3.signer.endpoint" instead and ignore the new key,
+  // falling back to the default "v1/aws/s3/sign" path (which this server does not route -> 404).
+  // Emit both keys so clients on either Iceberg version resolve the per-table signer endpoint.
+  private static final String LEGACY_S3_SIGNER_ENDPOINT = "s3.signer.endpoint";
+
   private final String endpoint;
   private final boolean pathStyleAccess;
   private final Duration signatureDuration;
@@ -76,6 +83,7 @@ public class S3RemoteRequestSigner implements RemoteRequestSigner {
   public Map<String, String> clientConfig(IcebergConfig icebergConfig, String signerEndpoint) {
     Map<String, String> config = new HashMap<>();
     config.put(RESTCatalogProperties.SIGNER_ENDPOINT, signerEndpoint);
+    config.put(LEGACY_S3_SIGNER_ENDPOINT, signerEndpoint);
     config.put(IcebergConstants.ICEBERG_S3_REMOTE_SIGNING_ENABLED, "true");
     String region = icebergConfig.getRawString(IcebergConfig.S3_REGION.getKey());
     if (StringUtils.isNotBlank(region)) {
