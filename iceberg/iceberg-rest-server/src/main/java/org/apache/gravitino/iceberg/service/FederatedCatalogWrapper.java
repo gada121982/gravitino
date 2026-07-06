@@ -21,6 +21,7 @@ package org.apache.gravitino.iceberg.service;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Maps;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -29,6 +30,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 import org.apache.gravitino.credential.CredentialPrivilege;
 import org.apache.gravitino.credential.CredentialPropertyUtils;
@@ -92,6 +94,17 @@ public class FederatedCatalogWrapper extends CatalogWrapperForREST {
   private static final String FORMAT_VERSION = "format-version";
   private static final Schema EMPTY_SCHEMA = new Schema();
 
+  // Header used to request remote-signing delegation from the upstream REST catalog.
+  private static final String ACCESS_DELEGATION_HEADER = "X-Iceberg-Access-Delegation";
+  private static final String REMOTE_SIGNING = "remote-signing";
+  // Client config key carrying the upstream catalog's advertised remote-sign endpoint.
+  private static final String S3_SIGNER_ENDPOINT = "s3.signer.endpoint";
+
+  // Caches the upstream (remote catalog) signer endpoint per table. The endpoint embeds stable
+  // identifiers (e.g. Lakekeeper's warehouse-id + table-uuid), so it is resolved once per table
+  // and reused for every subsequent sign, avoiding an extra loadTable round-trip per S3 request.
+  private final Map<TableIdentifier, String> signerPathCache = new ConcurrentHashMap<>();
+
   /**
    * Creates a federated wrapper.
    *
@@ -128,7 +141,10 @@ public class FederatedCatalogWrapper extends CatalogWrapperForREST {
       TableIdentifier tableIdentifier, RemoteSignRequest request, CredentialPrivilege privilege) {
     RESTCatalog restCatalog = (RESTCatalog) getCatalog();
     Map<String, String> properties = Maps.newHashMap(restCatalog.properties());
-    String signPath = ResourcePaths.forCatalogProperties(properties).remoteSign(tableIdentifier);
+    // The remote catalog may advertise a non-spec signer endpoint (e.g. Lakekeeper uses
+    // v1/signer/{warehouse-id}/tabular-id/{table-uuid}/v1/aws/s3/sign). Proxy to the advertised
+    // path rather than the Iceberg-spec .../sign path, which the remote catalog may not serve.
+    String signPath = resolveUpstreamSignPath(restCatalog, tableIdentifier, properties);
 
     AuthManager authManager = null;
     RESTClient client = null;
@@ -172,6 +188,77 @@ public class FederatedCatalogWrapper extends CatalogWrapperForREST {
         } catch (Exception e) {
           LOG.warn(
               "Failed to close auth manager when remote signing for table: {}", tableIdentifier, e);
+        }
+      }
+    }
+  }
+
+  /**
+   * Resolves the sign path to proxy to on the remote REST catalog. Prefers the endpoint the remote
+   * catalog advertises via {@code s3.signer.endpoint} (cached per table); falls back to the
+   * Iceberg-spec {@code .../sign} path for spec-compliant remote catalogs that do not advertise a
+   * custom endpoint.
+   */
+  private String resolveUpstreamSignPath(
+      RESTCatalog restCatalog, TableIdentifier tableIdentifier, Map<String, String> properties) {
+    return signerPathCache.computeIfAbsent(
+        tableIdentifier,
+        ident -> {
+          String advertised = fetchUpstreamSignerEndpoint(restCatalog, ident, properties);
+          return advertised != null
+              ? advertised
+              : ResourcePaths.forCatalogProperties(properties).remoteSign(ident);
+        });
+  }
+
+  /**
+   * Fetches the remote catalog's advertised {@code s3.signer.endpoint} for a table by loading it
+   * with remote-signing access delegation. Returns {@code null} when the remote catalog does not
+   * advertise a custom signer endpoint.
+   */
+  private static String fetchUpstreamSignerEndpoint(
+      RESTCatalog restCatalog, TableIdentifier identifier, Map<String, String> properties) {
+    String tablePath = ResourcePaths.forCatalogProperties(properties).table(identifier);
+    AuthManager authManager = null;
+    RESTClient client = null;
+    AuthSession authSession = null;
+    try {
+      authManager = AuthManagers.loadAuthManager(restCatalog.name(), properties);
+      client =
+          HTTPClient.builder(properties)
+              .uri(properties.get(CatalogProperties.URI))
+              .withHeaders(RESTUtil.configHeaders(properties))
+              .build();
+      authSession = authManager.catalogSession(client, properties);
+      LoadTableResponse response =
+          client
+              .withAuthSession(authSession)
+              .get(
+                  tablePath,
+                  LoadTableResponse.class,
+                  ImmutableMap.of(ACCESS_DELEGATION_HEADER, REMOTE_SIGNING),
+                  ErrorHandlers.tableErrorHandler());
+      return response.config() == null ? null : response.config().get(S3_SIGNER_ENDPOINT);
+    } finally {
+      if (authSession != null) {
+        try {
+          authSession.close();
+        } catch (Exception e) {
+          LOG.warn("Failed to close auth session when resolving signer endpoint: {}", identifier, e);
+        }
+      }
+      if (client != null) {
+        try {
+          client.close();
+        } catch (Exception e) {
+          LOG.warn("Failed to close REST client when resolving signer endpoint: {}", identifier, e);
+        }
+      }
+      if (authManager != null) {
+        try {
+          authManager.close();
+        } catch (Exception e) {
+          LOG.warn("Failed to close auth manager when resolving signer endpoint: {}", identifier, e);
         }
       }
     }
