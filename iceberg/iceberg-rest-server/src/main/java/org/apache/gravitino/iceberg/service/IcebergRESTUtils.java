@@ -409,10 +409,10 @@ public class IcebergRESTUtils {
   }
 
   /**
-   * Resolves the {@code (metalake, catalog)} an Iceberg REST prefix addresses. A prefix carrying the
-   * delimiter (e.g. {@code myMetalake.myCatalog}) selects that metalake explicitly, letting one
-   * endpoint serve every metalake. A prefix without the delimiter keeps the legacy behavior:
-   * the server's configured metalake plus the prefix as the catalog name.
+   * Resolves the {@code (metalake, catalog)} an Iceberg REST prefix addresses. A prefix carrying
+   * the delimiter (e.g. {@code myMetalake.myCatalog}) selects that metalake explicitly, letting one
+   * endpoint serve every metalake. A prefix without the delimiter keeps the legacy behavior: the
+   * server's configured metalake plus the prefix as the catalog name.
    *
    * @param rawPrefix the raw path prefix passed by the Jetty handler
    * @return the resolved metalake and catalog
@@ -421,11 +421,9 @@ public class IcebergRESTUtils {
     String prefix = getCatalogName(rawPrefix);
     int delimiter = prefix.indexOf(METALAKE_CATALOG_DELIMITER);
     if (delimiter > 0 && delimiter < prefix.length() - 1) {
-      return new MetalakeCatalog(
-          prefix.substring(0, delimiter), prefix.substring(delimiter + 1));
+      return new MetalakeCatalog(prefix.substring(0, delimiter), prefix.substring(delimiter + 1));
     }
-    return new MetalakeCatalog(
-        IcebergRESTServerContext.getInstance().metalakeName(), prefix);
+    return new MetalakeCatalog(IcebergRESTServerContext.getInstance().metalakeName(), prefix);
   }
 
   public static <T> T cloneIcebergRESTObject(Object message, Class<T> className) {
