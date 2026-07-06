@@ -381,6 +381,53 @@ public class IcebergRESTUtils {
     return catalogName;
   }
 
+  /**
+   * Delimiter separating metalake and catalog inside a multi-metalake Iceberg REST prefix, e.g.
+   * {@code {metalake}.{catalog}}. A single {@code :9001} endpoint uses this to serve catalogs
+   * across metalakes (one workspace = one metalake), since a catalog belongs to exactly one
+   * metalake. Metalake/catalog names must not contain this delimiter.
+   */
+  public static final char METALAKE_CATALOG_DELIMITER = '.';
+
+  /** Parsed {@code (metalake, catalog)} pair from an Iceberg REST prefix. */
+  public static final class MetalakeCatalog {
+    private final String metalake;
+    private final String catalog;
+
+    private MetalakeCatalog(String metalake, String catalog) {
+      this.metalake = metalake;
+      this.catalog = catalog;
+    }
+
+    public String metalake() {
+      return metalake;
+    }
+
+    public String catalog() {
+      return catalog;
+    }
+  }
+
+  /**
+   * Resolves the {@code (metalake, catalog)} an Iceberg REST prefix addresses. A prefix carrying the
+   * delimiter (e.g. {@code myMetalake.myCatalog}) selects that metalake explicitly, letting one
+   * endpoint serve every metalake. A prefix without the delimiter keeps the legacy behavior:
+   * the server's configured metalake plus the prefix as the catalog name.
+   *
+   * @param rawPrefix the raw path prefix passed by the Jetty handler
+   * @return the resolved metalake and catalog
+   */
+  public static MetalakeCatalog parseMetalakeCatalog(String rawPrefix) {
+    String prefix = getCatalogName(rawPrefix);
+    int delimiter = prefix.indexOf(METALAKE_CATALOG_DELIMITER);
+    if (delimiter > 0 && delimiter < prefix.length() - 1) {
+      return new MetalakeCatalog(
+          prefix.substring(0, delimiter), prefix.substring(delimiter + 1));
+    }
+    return new MetalakeCatalog(
+        IcebergRESTServerContext.getInstance().metalakeName(), prefix);
+  }
+
   public static <T> T cloneIcebergRESTObject(Object message, Class<T> className) {
     ObjectMapper icebergObjectMapper = IcebergObjectMapper.getInstance();
     try {

@@ -47,13 +47,16 @@ import org.apache.iceberg.rest.RESTUtil;
  */
 public class IcebergMetadataAuthorizationMethodInterceptor
     extends BaseMetadataAuthorizationMethodInterceptor {
-  private final String metalakeName = IcebergRESTServerContext.getInstance().metalakeName();
+  // Fallback metalake for prefixes that do not carry one (single-metalake / spec-compliant
+  // callers). When a prefix is "{metalake}.{catalog}", the metalake is resolved per-request so a
+  // single endpoint authorizes catalogs across metalakes.
+  private final String defaultMetalakeName = IcebergRESTServerContext.getInstance().metalakeName();
 
   @Override
   protected Map<Entity.EntityType, NameIdentifier> extractNameIdentifierFromParameters(
       Parameter[] parameters, Object[] args) {
     Map<Entity.EntityType, NameIdentifier> nameIdentifierMap = new HashMap<>();
-    nameIdentifierMap.put(Entity.EntityType.METALAKE, NameIdentifierUtil.ofMetalake(metalakeName));
+    String metalake = defaultMetalakeName;
     String catalog = null;
     String schema = null;
     Namespace rawNamespace = null;
@@ -67,9 +70,14 @@ public class IcebergMetadataAuthorizationMethodInterceptor
         String value = String.valueOf(args[i]);
         switch (type) {
           case CATALOG:
-            catalog = IcebergRESTUtils.getCatalogName(value);
+            // The prefix may address a specific metalake ("{metalake}.{catalog}"); resolve it so
+            // authorization runs against the correct (metalake, catalog) rather than a fixed one.
+            IcebergRESTUtils.MetalakeCatalog metalakeCatalog =
+                IcebergRESTUtils.parseMetalakeCatalog(value);
+            metalake = metalakeCatalog.metalake();
+            catalog = metalakeCatalog.catalog();
             nameIdentifierMap.put(
-                Entity.EntityType.CATALOG, NameIdentifierUtil.ofCatalog(metalakeName, catalog));
+                Entity.EntityType.CATALOG, NameIdentifierUtil.ofCatalog(metalake, catalog));
             break;
           case SCHEMA:
             rawNamespace =
@@ -77,26 +85,25 @@ public class IcebergMetadataAuthorizationMethodInterceptor
                     value, IcebergRESTUtils.NAMESPACE_SEPARATOR_URLENCODED_UTF_8);
             schema = String.join(separator, rawNamespace.levels());
             nameIdentifierMap.put(
-                Entity.EntityType.SCHEMA,
-                NameIdentifierUtil.ofSchema(metalakeName, catalog, schema));
+                Entity.EntityType.SCHEMA, NameIdentifierUtil.ofSchema(metalake, catalog, schema));
             break;
           case TABLE:
             nameIdentifierMap.put(
                 EntityType.TABLE,
                 NameIdentifierUtil.ofTable(
-                    metalakeName, catalog, schema, RESTUtil.decodeString(value)));
+                    metalake, catalog, schema, RESTUtil.decodeString(value)));
             break;
           case VIEW:
             String decodedViewName = RESTUtil.decodeString(value);
             nameIdentifierMap.put(
                 EntityType.VIEW,
-                NameIdentifierUtil.ofView(metalakeName, catalog, schema, decodedViewName));
+                NameIdentifierUtil.ofView(metalake, catalog, schema, decodedViewName));
             // Also register as TABLE so ANY_SELECT_TABLE in
             // ICEBERG_LOAD_VIEW_AUTHORIZATION_EXPRESSION
             // matches when Spark probes viewExists(tableName) during table resolution.
             nameIdentifierMap.put(
                 EntityType.TABLE,
-                NameIdentifierUtil.ofTable(metalakeName, catalog, schema, decodedViewName));
+                NameIdentifierUtil.ofTable(metalake, catalog, schema, decodedViewName));
             break;
           default:
             break;
@@ -104,6 +111,7 @@ public class IcebergMetadataAuthorizationMethodInterceptor
         continue;
       }
     }
+    nameIdentifierMap.put(Entity.EntityType.METALAKE, NameIdentifierUtil.ofMetalake(metalake));
     return nameIdentifierMap;
   }
 
