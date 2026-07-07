@@ -144,9 +144,12 @@ public class IcebergTableOperations {
 
             IcebergRESTServerContext authContext = IcebergRESTServerContext.getInstance();
             if (authContext.isAuthorizationEnabled()) {
+              // Resolve (metalake, catalog) from the raw prefix so a "{metalake}.{catalog}" prefix
+              // authorizes against the correct metalake + simple catalog name.
+              IcebergRESTUtils.MetalakeCatalog mc =
+                  IcebergRESTUtils.parseMetalakeCatalog(catalogName);
               listTablesResponse =
-                  filterListTablesResponse(
-                      listTablesResponse, authContext.metalakeName(), catalogName);
+                  filterListTablesResponse(listTablesResponse, mc.metalake(), mc.catalog());
             }
             listTablesResponse =
                 IcebergPaginationHelper.paginateTables(

@@ -125,8 +125,13 @@ public class IcebergNamespaceOperations {
 
             IcebergRESTServerContext authContext = IcebergRESTServerContext.getInstance();
             if (authContext.isAuthorizationEnabled()) {
-              response =
-                  filterListNamespacesResponse(response, authContext.metalakeName(), catalogName);
+              // catalogName is the raw Iceberg REST prefix; resolve the addressed
+              // (metalake, catalog) so a "{metalake}.{catalog}" prefix authorizes against the
+              // correct metalake + simple catalog name instead of the server-default metalake and
+              // the whole prefix (which breaks SCHEMA MetadataObject construction).
+              IcebergRESTUtils.MetalakeCatalog mc =
+                  IcebergRESTUtils.parseMetalakeCatalog(catalogName);
+              response = filterListNamespacesResponse(response, mc.metalake(), mc.catalog());
             }
             response =
                 IcebergPaginationHelper.paginateNamespaces(
