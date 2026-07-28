@@ -60,7 +60,7 @@ final class IcebergOrphanSchemaCleanup {
       SchemaEntityCleaner.deleteOrphanedSchemaEntities(
           GravitinoEnv.getInstance().entityStore(),
           IcebergIdentifierUtils.toGravitinoSchemaIdentifier(
-              metalake, context.catalogName(), namespace, separator),
+              metalake, context.simpleCatalogName(), namespace, separator),
           true,
           schemaIdent ->
               namespaceDispatcher.namespaceExists(

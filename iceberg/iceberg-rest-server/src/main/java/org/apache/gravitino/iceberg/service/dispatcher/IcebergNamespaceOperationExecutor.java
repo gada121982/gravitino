@@ -147,7 +147,11 @@ public class IcebergNamespaceOperationExecutor implements IcebergNamespaceOperat
       RegisterTableRequest registerTableRequest) {
     TableEntity.NAME.validate(registerTableRequest.name(), Entity.EntityType.TABLE);
     IcebergCleanupHelper.rejectIfBeingPurged(
-        cleanupManager, context.catalogName(), namespace, registerTableRequest.name());
+        cleanupManager,
+        context.metalakeName(),
+        context.simpleCatalogName(),
+        namespace,
+        registerTableRequest.name());
 
     CatalogWrapperForREST catalogWrapper =
         icebergCatalogWrapperManager.getCatalogWrapper(context.catalogName());
@@ -161,7 +165,7 @@ public class IcebergNamespaceOperationExecutor implements IcebergNamespaceOperat
             ? registerTableRequest
             : new RegisterTableRequestWithMetadata(registerTableRequest, metadata);
     return catalogWrapper.registerTable(
-        namespace, loadedRequest, context.requestCredentialVending());
+        namespace, loadedRequest, context.accessDelegation());
   }
 
   @Override

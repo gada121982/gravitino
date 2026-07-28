@@ -28,8 +28,11 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import javax.annotation.Nullable;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.gravitino.catalog.lakehouse.iceberg.IcebergConstants;
 import org.apache.gravitino.credential.CredentialPrivilege;
 import org.apache.gravitino.iceberg.common.IcebergConfig;
@@ -47,6 +50,7 @@ import org.apache.iceberg.UpdateRequirement;
 import org.apache.iceberg.catalog.Catalog;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.exceptions.NoSuchTableException;
 import org.apache.iceberg.rest.CatalogHandlers;
 import org.apache.iceberg.rest.Endpoint;
 import org.apache.iceberg.rest.ErrorHandlers;
@@ -62,11 +66,13 @@ import org.apache.iceberg.rest.auth.AuthSession;
 import org.apache.iceberg.rest.requests.CreateTableRequest;
 import org.apache.iceberg.rest.requests.PlanTableScanRequest;
 import org.apache.iceberg.rest.requests.RegisterTableRequest;
+import org.apache.iceberg.rest.requests.RemoteSignRequest;
 import org.apache.iceberg.rest.requests.UpdateTableRequest;
 import org.apache.iceberg.rest.responses.ConfigResponse;
 import org.apache.iceberg.rest.responses.LoadCredentialsResponse;
 import org.apache.iceberg.rest.responses.LoadTableResponse;
 import org.apache.iceberg.rest.responses.PlanTableScanResponse;
+import org.apache.iceberg.rest.responses.RemoteSignResponse;
 
 /**
  * A {@link CatalogWrapperForREST} for a federated Iceberg REST catalog (the underlying catalog is a
@@ -76,6 +82,10 @@ import org.apache.iceberg.rest.responses.PlanTableScanResponse;
  * instanceof RESTCatalog} checks scattered across the base class. Table load, create and register
  * use authenticated REST calls so {@code X-Iceberg-Access-Delegation} can be forwarded when the
  * client requested credential vending. Update still uses the Iceberg Catalog API.
+ *
+ * <p>When the client requests {@code remote-signing}, the response carries this server's signer
+ * configuration, and {@link #remoteSign} proxies each signing request to the signer endpoint the
+ * remote catalog advertises (for example Lakekeeper's per-table signer route).
  *
  * <p>By default the wrapper passes through the storage credentials the remote catalog vends and
  * never injects Gravitino-generated credentials. With {@code
@@ -93,6 +103,12 @@ public class FederatedCatalogWrapper extends CatalogWrapperForREST {
   private static final Schema EMPTY_SCHEMA = new Schema();
   private static final String X_ICEBERG_ACCESS_DELEGATION = "X-Iceberg-Access-Delegation";
   private static final String VENDED_CREDENTIALS = "vended-credentials";
+  private static final String REMOTE_SIGNING = "remote-signing";
+  // Client config key carrying the upstream catalog's advertised remote-sign endpoint.
+  private static final String S3_SIGNER_ENDPOINT = "s3.signer.endpoint";
+  // Reserved REST catalog property naming the path segment the remote catalog is addressed under
+  // (Lakekeeper puts the warehouse id here). ResourcePaths keeps its own copy private.
+  private static final String REST_PREFIX_PROPERTY = "prefix";
 
   /**
    * Config key prefixes that carry storage credentials. With Gravitino credential vending, keys
@@ -127,6 +143,11 @@ public class FederatedCatalogWrapper extends CatalogWrapperForREST {
    * lookup.
    */
   private volatile Boolean remoteSupportsScanPlan;
+
+  // Caches the upstream (remote catalog) signer endpoint per table. The endpoint embeds stable
+  // identifiers (e.g. Lakekeeper's warehouse-id + table-uuid), so it is resolved once per table
+  // and reused for every subsequent sign, avoiding an extra loadTable round-trip per S3 request.
+  private final Map<TableIdentifier, String> signerPathCache = new ConcurrentHashMap<>();
 
   /** Whether storage credentials come from this catalog's providers rather than the remote. */
   private final boolean vendCredentialsLocally;
@@ -208,23 +229,30 @@ public class FederatedCatalogWrapper extends CatalogWrapperForREST {
    *
    * @param namespace the namespace that will own the table.
    * @param request the create-table request.
-   * @param requestCredential whether the client requested vended credentials.
-   * @return the create response, including rewritten remote credentials when requested.
+   * @param accessDelegation the access delegation the client requested.
+   * @return the create response, including rewritten remote credentials or this server's signer
+   *     configuration when requested.
    */
   @Override
   public LoadTableResponse createTable(
-      Namespace namespace, CreateTableRequest request, boolean requestCredential) {
+      Namespace namespace, CreateTableRequest request, IcebergAccessDelegation accessDelegation) {
     request.validate();
     validateCreateRequest(request);
+    TableIdentifier identifier = TableIdentifier.of(namespace, request.name());
+    boolean requestCredential = accessDelegation.requestVendedCredentials();
+    LoadTableResponse response;
     if (!vendCredentialsLocally) {
-      return createTableViaREST(namespace, request, requestCredential);
+      response = createTableViaREST(namespace, request, requestCredential);
+    } else {
+      // The creator owns the new table, so it receives write credentials, as for a local catalog.
+      response =
+          withLocalCredentials(
+              identifier,
+              createTableViaREST(namespace, request, false),
+              requestCredential,
+              CredentialPrivilege.WRITE);
     }
-    // The creator owns the new table, so it receives write credentials, as for a local catalog.
-    return withLocalCredentials(
-        TableIdentifier.of(namespace, request.name()),
-        createTableViaREST(namespace, request, false),
-        requestCredential,
-        CredentialPrivilege.WRITE);
+    return withRemoteSigning(identifier, response, accessDelegation);
   }
 
   /**
@@ -238,18 +266,23 @@ public class FederatedCatalogWrapper extends CatalogWrapperForREST {
    * the caller's {@code privilege}; otherwise the remote catalog decides what to vend.
    *
    * @param identifier the table identifier.
-   * @param requestCredential whether the client requested vended credentials.
+   * @param accessDelegation the access delegation the client requested.
    * @param privilege the caller's privilege, used only with Gravitino credential vending.
-   * @return the load-table response, including rewritten remote credentials when requested.
+   * @return the load-table response, including rewritten remote credentials or this server's
+   *     signer configuration when requested.
    */
   @Override
   public LoadTableResponse loadTable(
-      TableIdentifier identifier, boolean requestCredential, CredentialPrivilege privilege) {
-    if (!vendCredentialsLocally) {
-      return loadTableViaREST(identifier, requestCredential);
-    }
-    return withLocalCredentials(
-        identifier, loadTableViaREST(identifier, false), requestCredential, privilege);
+      TableIdentifier identifier,
+      IcebergAccessDelegation accessDelegation,
+      CredentialPrivilege privilege) {
+    boolean requestCredential = accessDelegation.requestVendedCredentials();
+    LoadTableResponse response =
+        vendCredentialsLocally
+            ? withLocalCredentials(
+                identifier, loadTableViaREST(identifier, false), requestCredential, privilege)
+            : loadTableViaREST(identifier, requestCredential);
+    return withRemoteSigning(identifier, response, accessDelegation);
   }
 
   /**
@@ -262,22 +295,129 @@ public class FederatedCatalogWrapper extends CatalogWrapperForREST {
    *
    * @param namespace the namespace that will own the table.
    * @param request the register-table request.
-   * @param requestCredential whether the client requested vended credentials.
-   * @return the register response, including rewritten remote credentials when requested.
+   * @param accessDelegation the access delegation the client requested.
+   * @return the register response, including rewritten remote credentials or this server's
+   *     signer configuration when requested.
    */
   @Override
   public LoadTableResponse registerTable(
-      Namespace namespace, RegisterTableRequest request, boolean requestCredential) {
+      Namespace namespace, RegisterTableRequest request, IcebergAccessDelegation accessDelegation) {
+    TableIdentifier identifier = TableIdentifier.of(namespace, request.name());
+    boolean requestCredential = accessDelegation.requestVendedCredentials();
+    LoadTableResponse response;
     if (!vendCredentialsLocally) {
-      return registerTableViaREST(namespace, request, requestCredential);
+      response = registerTableViaREST(namespace, request, requestCredential);
+    } else {
+      // The registering user owns the table, so it receives write credentials, as for a local
+      // catalog.
+      response =
+          withLocalCredentials(
+              identifier,
+              registerTableViaREST(namespace, request, false),
+              requestCredential,
+              CredentialPrivilege.WRITE);
     }
-    // The registering user owns the table, so it receives write credentials, as for a local
-    // catalog.
-    return withLocalCredentials(
-        TableIdentifier.of(namespace, request.name()),
-        registerTableViaREST(namespace, request, false),
-        requestCredential,
-        CredentialPrivilege.WRITE);
+    return withRemoteSigning(identifier, response, accessDelegation);
+  }
+
+  @Override
+  public RemoteSignResponse remoteSign(
+      TableIdentifier tableIdentifier, RemoteSignRequest request, CredentialPrivilege privilege) {
+    RESTCatalog restCatalog = (RESTCatalog) getCatalog();
+    Map<String, String> properties = Maps.newHashMap(restCatalog.properties());
+    // The remote catalog may advertise a non-spec signer endpoint (e.g. Lakekeeper uses
+    // v1/signer/{warehouse-id}/tabular-id/{table-uuid}/v1/aws/s3/sign). Proxy to the advertised
+    // path rather than the Iceberg-spec .../sign path, which the remote catalog may not serve.
+    String signPath = resolveUpstreamSignPath(restCatalog, tableIdentifier, properties);
+    return callRemoteCatalog(
+        restCatalog,
+        String.format("remote signing for table: %s", tableIdentifier),
+        client ->
+            client.post(
+                signPath,
+                request,
+                RemoteSignResponse.class,
+                Collections.emptyMap(),
+                ErrorHandlers.tableErrorHandler()));
+  }
+
+  /**
+   * Resolves the sign path to proxy to on the remote REST catalog. Prefers the endpoint the remote
+   * catalog advertises via {@code s3.signer.endpoint} (cached per table); falls back to the
+   * Iceberg-spec {@code .../sign} path for spec-compliant remote catalogs that do not advertise a
+   * custom endpoint.
+   */
+  private String resolveUpstreamSignPath(
+      RESTCatalog restCatalog, TableIdentifier tableIdentifier, Map<String, String> properties) {
+    String cached = signerPathCache.get(tableIdentifier);
+    if (cached != null) {
+      return cached;
+    }
+
+    String advertised;
+    try {
+      advertised = fetchUpstreamSignerEndpoint(restCatalog, tableIdentifier, properties);
+    } catch (NoSuchTableException e) {
+      // A staged create (CTAS) registers the table upstream but leaves it uncommitted, and a
+      // remote catalog may refuse to load it while still being able to sign for it — Lakekeeper
+      // returns 404 for loadTable on a staged table, yet its signer resolves staged tables. Fall
+      // back to the prefix-scoped signer route, which identifies the table by the request location
+      // instead of by name. Deliberately not cached: once the create commits, the table-specific
+      // endpoint advertised by the remote catalog is the stricter choice.
+      String prefixScopedPath = prefixScopedSignPath(properties);
+      if (prefixScopedPath == null) {
+        throw e;
+      }
+      LOG.debug(
+          "Remote catalog cannot load table {} (likely a staged create); signing via the "
+              + "prefix-scoped route {}",
+          tableIdentifier,
+          prefixScopedPath);
+      return prefixScopedPath;
+    }
+
+    String resolved =
+        advertised != null
+            ? advertised
+            : ResourcePaths.forCatalogProperties(properties).remoteSign(tableIdentifier);
+    signerPathCache.put(tableIdentifier, resolved);
+    return resolved;
+  }
+
+  /**
+   * Builds the prefix-scoped S3 signer route, which signs by request location rather than by table
+   * identity and therefore also serves tables that are not committed yet. Returns {@code null} when
+   * the remote catalog does not use a prefix, in which case no such route exists.
+   */
+  @Nullable
+  @VisibleForTesting
+  static String prefixScopedSignPath(Map<String, String> properties) {
+    String prefix = properties.get(REST_PREFIX_PROPERTY);
+    if (StringUtils.isBlank(prefix)) {
+      return null;
+    }
+    return String.format("v1/%s/v1/aws/s3/sign", RESTUtil.encodeString(prefix));
+  }
+
+  /**
+   * Fetches the remote catalog's advertised {@code s3.signer.endpoint} for a table by loading it
+   * with remote-signing access delegation. Returns {@code null} when the remote catalog does not
+   * advertise a custom signer endpoint.
+   */
+  private static String fetchUpstreamSignerEndpoint(
+      RESTCatalog restCatalog, TableIdentifier identifier, Map<String, String> properties) {
+    String tablePath = ResourcePaths.forCatalogProperties(properties).table(identifier);
+    LoadTableResponse response =
+        callRemoteCatalog(
+            restCatalog,
+            String.format("resolving signer endpoint: %s", identifier),
+            client ->
+                client.get(
+                    tablePath,
+                    LoadTableResponse.class,
+                    ImmutableMap.of(X_ICEBERG_ACCESS_DELEGATION, REMOTE_SIGNING),
+                    ErrorHandlers.tableErrorHandler()));
+    return response.config() == null ? null : response.config().get(S3_SIGNER_ENDPOINT);
   }
 
   @Override
@@ -685,9 +825,23 @@ public class FederatedCatalogWrapper extends CatalogWrapperForREST {
             .withTableMetadata(remote.tableMetadata())
             .addAllConfig(config)
             .build();
-    return shouldGenerateCredential(withoutRemoteCredentials, requestCredential)
+    return shouldGenerateCredential(
+            withoutRemoteCredentials, IcebergAccessDelegation.of(requestCredential, false))
         ? injectCredentialConfig(identifier, withoutRemoteCredentials, privilege)
         : withoutRemoteCredentials;
+  }
+
+  /**
+   * Adds this server's signer configuration when the client asked for remote signing. Signing
+   * requests then reach {@link #remoteSign}, which proxies them to the remote catalog's signer.
+   */
+  private LoadTableResponse withRemoteSigning(
+      TableIdentifier identifier,
+      LoadTableResponse response,
+      IcebergAccessDelegation accessDelegation) {
+    return shouldGenerateRemoteSign(response, accessDelegation)
+        ? injectRemoteSigningConfig(identifier, response)
+        : response;
   }
 
   private LoadTableResponse rewriteRemoteLoadTable(
@@ -701,6 +855,14 @@ public class FederatedCatalogWrapper extends CatalogWrapperForREST {
    * catalog, including the staged-create path used by federated table creation.
    */
   private LoadTableResponse tableUpdateInternal(TableIdentifier ident, UpdateTableRequest request) {
+    if (isCreate(request) && getCatalog() instanceof RESTCatalog) {
+      // Staged-create commit against a remote REST catalog. The remote catalog already holds the
+      // staged table from the create that opened this transaction, so forward the commit as-is and
+      // let it finalize the table. Rebuilding the commit as a fresh create (the branch below) would
+      // re-run create-time validation upstream, which fails once the staged write has produced data
+      // files: Lakekeeper requires the location of a table it creates to be empty.
+      return proxyTableUpdate(ident, request);
+    }
     if (isCreate(request)) {
       validateStagedCreateUpdates(request);
       // this is a hacky way to get TableOperations for an uncommitted table
@@ -746,6 +908,29 @@ public class FederatedCatalogWrapper extends CatalogWrapperForREST {
       validateSchemaUpdates(ident, request);
       return CatalogHandlers.updateTable(getCatalog(), ident, request);
     }
+  }
+
+  /**
+   * Forwards a table commit to the remote REST catalog verbatim, so the remote catalog applies the
+   * requirements and updates itself. Used for the staged-create commit, which the remote catalog
+   * must resolve against the table it staged rather than treat as a new create.
+   */
+  private LoadTableResponse proxyTableUpdate(
+      TableIdentifier identifier, UpdateTableRequest request) {
+    RESTCatalog restCatalog = (RESTCatalog) getCatalog();
+    String tablePath =
+        ResourcePaths.forCatalogProperties(Maps.newHashMap(restCatalog.properties()))
+            .table(identifier);
+    return callRemoteCatalog(
+        restCatalog,
+        String.format("committing table: %s", identifier),
+        client ->
+            client.post(
+                tablePath,
+                request,
+                LoadTableResponse.class,
+                Collections.emptyMap(),
+                ErrorHandlers.tableCommitHandler()));
   }
 
   private static boolean isCreate(UpdateTableRequest request) {
