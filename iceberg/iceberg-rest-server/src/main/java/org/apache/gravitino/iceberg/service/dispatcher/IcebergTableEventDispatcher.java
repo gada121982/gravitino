@@ -67,6 +67,7 @@ import org.apache.iceberg.metrics.MetricsReport;
 import org.apache.iceberg.rest.requests.CreateTableRequest;
 import org.apache.iceberg.rest.requests.FetchScanTasksRequest;
 import org.apache.iceberg.rest.requests.PlanTableScanRequest;
+import org.apache.iceberg.rest.requests.RemoteSignRequest;
 import org.apache.iceberg.rest.requests.RenameTableRequest;
 import org.apache.iceberg.rest.requests.UpdateTableRequest;
 import org.apache.iceberg.rest.responses.FetchScanTasksResponse;
@@ -74,6 +75,7 @@ import org.apache.iceberg.rest.responses.ListTablesResponse;
 import org.apache.iceberg.rest.responses.LoadCredentialsResponse;
 import org.apache.iceberg.rest.responses.LoadTableResponse;
 import org.apache.iceberg.rest.responses.PlanTableScanResponse;
+import org.apache.iceberg.rest.responses.RemoteSignResponse;
 
 /**
  * {@code IcebergTableEventDispatcher} is a decorator for {@link IcebergTableOperationExecutor} that
@@ -88,15 +90,11 @@ public class IcebergTableEventDispatcher implements IcebergTableOperationDispatc
 
   private IcebergTableOperationDispatcher icebergTableOperationDispatcher;
   private EventBus eventBus;
-  private String metalakeName;
 
   public IcebergTableEventDispatcher(
-      IcebergTableOperationDispatcher icebergTableOperationDispatcher,
-      EventBus eventBus,
-      String metalakeName) {
+      IcebergTableOperationDispatcher icebergTableOperationDispatcher, EventBus eventBus) {
     this.icebergTableOperationDispatcher = icebergTableOperationDispatcher;
     this.eventBus = eventBus;
-    this.metalakeName = metalakeName;
   }
 
   @Override
@@ -105,7 +103,7 @@ public class IcebergTableEventDispatcher implements IcebergTableOperationDispatc
     TableIdentifier tableIdentifier = TableIdentifier.of(namespace, createTableRequest.name());
     NameIdentifier nameIdentifier =
         IcebergRESTUtils.getGravitinoNameIdentifier(
-            metalakeName, context.catalogName(), tableIdentifier);
+            context.metalakeName(), context.simpleCatalogName(), tableIdentifier);
     Optional<BaseEvent> transformedEvent =
         eventBus.dispatchEvent(
             new IcebergCreateTablePreEvent(context, nameIdentifier, createTableRequest));
@@ -141,7 +139,7 @@ public class IcebergTableEventDispatcher implements IcebergTableOperationDispatc
       UpdateTableRequest updateTableRequest) {
     NameIdentifier gravitinoNameIdentifier =
         IcebergRESTUtils.getGravitinoNameIdentifier(
-            metalakeName, context.catalogName(), tableIdentifier);
+            context.metalakeName(), context.simpleCatalogName(), tableIdentifier);
     Optional<BaseEvent> transformedEvent =
         eventBus.dispatchEvent(
             new IcebergUpdateTablePreEvent(context, gravitinoNameIdentifier, updateTableRequest));
@@ -175,7 +173,7 @@ public class IcebergTableEventDispatcher implements IcebergTableOperationDispatc
       IcebergRequestContext context, TableIdentifier tableIdentifier, boolean purgeRequested) {
     NameIdentifier gravitinoNameIdentifier =
         IcebergRESTUtils.getGravitinoNameIdentifier(
-            metalakeName, context.catalogName(), tableIdentifier);
+            context.metalakeName(), context.simpleCatalogName(), tableIdentifier);
     eventBus.dispatchEvent(
         new IcebergDropTablePreEvent(context, gravitinoNameIdentifier, purgeRequested));
     try {
@@ -194,7 +192,7 @@ public class IcebergTableEventDispatcher implements IcebergTableOperationDispatc
       IcebergRequestContext context, TableIdentifier tableIdentifier) {
     NameIdentifier gravitinoNameIdentifier =
         IcebergRESTUtils.getGravitinoNameIdentifier(
-            metalakeName, context.catalogName(), tableIdentifier);
+            context.metalakeName(), context.simpleCatalogName(), tableIdentifier);
     eventBus.dispatchEvent(new IcebergLoadTablePreEvent(context, gravitinoNameIdentifier));
     LoadTableResponse loadTableResponse;
     try {
@@ -214,7 +212,8 @@ public class IcebergTableEventDispatcher implements IcebergTableOperationDispatc
   @Override
   public ListTablesResponse listTable(IcebergRequestContext context, Namespace namespace) {
     NameIdentifier gravitinoNameIdentifier =
-        IcebergRESTUtils.getGravitinoNameIdentifier(metalakeName, context.catalogName(), namespace);
+        IcebergRESTUtils.getGravitinoNameIdentifier(
+            context.metalakeName(), context.simpleCatalogName(), namespace);
     eventBus.dispatchEvent(new IcebergListTablePreEvent(context, gravitinoNameIdentifier));
     try {
       ListTablesResponse listTablesResponse =
@@ -234,7 +233,7 @@ public class IcebergTableEventDispatcher implements IcebergTableOperationDispatc
   public boolean tableExists(IcebergRequestContext context, TableIdentifier tableIdentifier) {
     NameIdentifier gravitinoNameIdentifier =
         IcebergRESTUtils.getGravitinoNameIdentifier(
-            metalakeName, context.catalogName(), tableIdentifier);
+            context.metalakeName(), context.simpleCatalogName(), tableIdentifier);
     eventBus.dispatchEvent(new IcebergTableExistsPreEvent(context, gravitinoNameIdentifier));
     boolean isExists;
     try {
@@ -272,7 +271,7 @@ public class IcebergTableEventDispatcher implements IcebergTableOperationDispatc
     TableIdentifier sourceTable = renameTableRequest.source();
     NameIdentifier gravitinoNameIdentifier =
         IcebergRESTUtils.getGravitinoNameIdentifier(
-            metalakeName, context.catalogName(), sourceTable);
+            context.metalakeName(), context.simpleCatalogName(), sourceTable);
     eventBus.dispatchEvent(
         new IcebergRenameTablePreEvent(context, gravitinoNameIdentifier, renameTableRequest));
     try {
@@ -300,7 +299,7 @@ public class IcebergTableEventDispatcher implements IcebergTableOperationDispatc
       IcebergRequestContext context, TableIdentifier tableIdentifier) {
     NameIdentifier gravitinoNameIdentifier =
         IcebergRESTUtils.getGravitinoNameIdentifier(
-            metalakeName, context.catalogName(), tableIdentifier);
+            context.metalakeName(), context.simpleCatalogName(), tableIdentifier);
     eventBus.dispatchEvent(
         new IcebergLoadTableCredentialPreEvent(context, gravitinoNameIdentifier));
     LoadCredentialsResponse loadCredentialsResponse;
@@ -314,6 +313,14 @@ public class IcebergTableEventDispatcher implements IcebergTableOperationDispatc
     }
     eventBus.dispatchEvent(new IcebergLoadTableCredentialEvent(context, gravitinoNameIdentifier));
     return loadCredentialsResponse;
+  }
+
+  @Override
+  public RemoteSignResponse remoteSign(
+      IcebergRequestContext context,
+      TableIdentifier tableIdentifier,
+      RemoteSignRequest remoteSignRequest) {
+    return icebergTableOperationDispatcher.remoteSign(context, tableIdentifier, remoteSignRequest);
   }
 
   /**
@@ -333,7 +340,7 @@ public class IcebergTableEventDispatcher implements IcebergTableOperationDispatc
       PlanTableScanRequest scanRequest) {
     NameIdentifier gravitinoNameIdentifier =
         IcebergRESTUtils.getGravitinoNameIdentifier(
-            metalakeName, context.catalogName(), tableIdentifier);
+            context.metalakeName(), context.simpleCatalogName(), tableIdentifier);
     eventBus.dispatchEvent(new IcebergPlanTableScanPreEvent(context, gravitinoNameIdentifier));
     PlanTableScanResponse planTableScanResponse;
     try {

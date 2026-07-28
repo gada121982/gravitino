@@ -95,11 +95,17 @@ public class IcebergCatalogWrapperManager implements AutoCloseable {
           .catalogManager()
           .addCatalogCacheRemoveListener(
               ident -> {
-                if (ident.namespace().level(0).equals(metalakeName)) {
-                  catalogWrapperCache.invalidate(ident.name());
-                  if (ident.name().equals(configProvider.getDefaultCatalogName())) {
-                    catalogWrapperCache.invalidate(IcebergConstants.ICEBERG_REST_DEFAULT_CATALOG);
-                  }
+                // The wrapper cache key is the raw Iceberg REST prefix. Invalidate for any
+                // metalake (a single endpoint serves N metalakes), covering both the
+                // multi-metalake form "{metalake}.{catalog}" and the legacy plain-catalog form.
+                String metalake = ident.namespace().level(0);
+                String catalog = ident.name();
+                catalogWrapperCache.invalidate(
+                    metalake + IcebergRESTUtils.METALAKE_CATALOG_DELIMITER + catalog);
+                catalogWrapperCache.invalidate(catalog);
+                if (metalake.equals(metalakeName)
+                    && catalog.equals(configProvider.getDefaultCatalogName())) {
+                  catalogWrapperCache.invalidate(IcebergConstants.ICEBERG_REST_DEFAULT_CATALOG);
                 }
               });
     }
