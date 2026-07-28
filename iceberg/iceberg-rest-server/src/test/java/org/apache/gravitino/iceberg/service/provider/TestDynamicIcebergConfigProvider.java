@@ -112,7 +112,8 @@ public class TestDynamicIcebergConfigProvider {
     DynamicIcebergConfigProvider.CatalogFetcher mockFetcher =
         new DynamicIcebergConfigProvider.CatalogFetcher() {
           @Override
-          public Catalog loadCatalog(String catalogName) throws NoSuchCatalogException {
+          public Catalog loadCatalog(String metalake, String catalogName)
+              throws NoSuchCatalogException {
             Catalog catalog = catalogMap.get(catalogName);
             if (catalog == null) {
               throw new NoSuchCatalogException("Catalog not found: %s", catalogName);

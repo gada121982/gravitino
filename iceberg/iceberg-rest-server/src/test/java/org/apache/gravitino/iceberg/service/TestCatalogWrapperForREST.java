@@ -34,6 +34,7 @@ import com.sun.net.httpserver.HttpServer;
 import java.io.OutputStream;
 import java.lang.reflect.Field;
 import java.net.InetSocketAddress;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -80,10 +81,12 @@ import org.apache.iceberg.io.ResolvingFileIO;
 import org.apache.iceberg.rest.Endpoint;
 import org.apache.iceberg.rest.PlanStatus;
 import org.apache.iceberg.rest.RESTCatalog;
+import org.apache.iceberg.rest.RESTCatalogProperties;
 import org.apache.iceberg.rest.auth.AuthProperties;
 import org.apache.iceberg.rest.credentials.Credential;
 import org.apache.iceberg.rest.requests.CreateTableRequest;
 import org.apache.iceberg.rest.requests.ImmutableRegisterTableRequest;
+import org.apache.iceberg.rest.requests.ImmutableRemoteSignRequest;
 import org.apache.iceberg.rest.requests.PlanTableScanRequest;
 import org.apache.iceberg.rest.requests.RegisterTableRequest;
 import org.apache.iceberg.rest.requests.UpdateTableRequest;
@@ -94,6 +97,7 @@ import org.apache.iceberg.rest.responses.LoadTableResponse;
 import org.apache.iceberg.rest.responses.LoadTableResponseParser;
 import org.apache.iceberg.rest.responses.PlanTableScanResponse;
 import org.apache.iceberg.rest.responses.PlanTableScanResponseParser;
+import org.apache.iceberg.rest.responses.RemoteSignResponse;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -587,8 +591,8 @@ public class TestCatalogWrapperForREST {
             PartitionSpec.unpartitioned(),
             "s3://bucket/wh/db/tbl",
             Collections.emptyMap());
-    LoadTableResponse loaded = noProvider.loadTable(table, true, CredentialPrivilege.READ);
-    Assertions.assertFalse(noProvider.shouldGenerateCredential(loaded, true));
+    LoadTableResponse loaded = noProvider.loadTable(table, IcebergAccessDelegation.of(true, false), CredentialPrivilege.READ);
+    Assertions.assertFalse(noProvider.shouldGenerateCredential(loaded, IcebergAccessDelegation.of(true, false)));
     Assertions.assertTrue(loaded.credentials().isEmpty());
     Assertions.assertTrue(
         loaded.config().keySet().stream().noneMatch(key -> key.startsWith("s3.")),
@@ -615,7 +619,7 @@ public class TestCatalogWrapperForREST {
             Collections.emptyMap());
     Assertions.assertTrue(
         withProvider.shouldGenerateCredential(
-            withProvider.loadTable(table, false, CredentialPrivilege.READ), true));
+            withProvider.loadTable(table, IcebergAccessDelegation.of(false, false), CredentialPrivilege.READ), IcebergAccessDelegation.of(true, false)));
   }
 
   @Test
@@ -926,7 +930,7 @@ public class TestCatalogWrapperForREST {
                   "/tmp/warehouse"));
       CatalogWrapperForREST wrapper = new StaticCatalogWrapperForREST("local", config, restCatalog);
 
-      LoadTableResponse response = wrapper.loadTable(table, true, CredentialPrivilege.READ);
+      LoadTableResponse response = wrapper.loadTable(table, IcebergAccessDelegation.of(true, false), CredentialPrivilege.READ);
 
       Assertions.assertEquals(expectedPath, requestPath.get());
       Assertions.assertEquals("GET", requestMethod.get());
@@ -1026,7 +1030,7 @@ public class TestCatalogWrapperForREST {
       IcebergConfig config = new IcebergConfig(properties.build());
       CatalogWrapperForREST wrapper = new StaticCatalogWrapperForREST("local", config, restCatalog);
 
-      LoadTableResponse response = wrapper.loadTable(table, true, CredentialPrivilege.READ);
+      LoadTableResponse response = wrapper.loadTable(table, IcebergAccessDelegation.of(true, false), CredentialPrivilege.READ);
 
       Assertions.assertNull(accessDelegationHeader.get(), "remote must not be asked to vend");
       Assertions.assertEquals(1, response.credentials().size());
@@ -1037,7 +1041,7 @@ public class TestCatalogWrapperForREST {
       Assertions.assertEquals(
           "org.apache.iceberg.aws.s3.S3FileIO", response.config().get("io-impl"));
 
-      LoadTableResponse withoutRequest = wrapper.loadTable(table, false, CredentialPrivilege.READ);
+      LoadTableResponse withoutRequest = wrapper.loadTable(table, IcebergAccessDelegation.of(false, false), CredentialPrivilege.READ);
       Assertions.assertNull(accessDelegationHeader.get());
       Assertions.assertTrue(
           withoutRequest.credentials().stream()
@@ -1106,7 +1110,7 @@ public class TestCatalogWrapperForREST {
                   "/tmp/warehouse"));
       CatalogWrapperForREST wrapper = new StaticCatalogWrapperForREST("local", config, restCatalog);
 
-      LoadTableResponse response = wrapper.loadTable(table, false, CredentialPrivilege.READ);
+      LoadTableResponse response = wrapper.loadTable(table, IcebergAccessDelegation.of(false, false), CredentialPrivilege.READ);
 
       Assertions.assertNull(
           accessDelegationHeader.get(),
@@ -1194,7 +1198,7 @@ public class TestCatalogWrapperForREST {
               .withSchema(new Schema(Types.NestedField.required(1, "id", Types.IntegerType.get())))
               .build();
 
-      LoadTableResponse response = wrapper.createTable(namespace, request, true);
+      LoadTableResponse response = wrapper.createTable(namespace, request, IcebergAccessDelegation.of(true, false));
 
       Assertions.assertEquals("/v1/upstream/namespaces/db/tables", requestPath.get());
       Assertions.assertEquals("POST", requestMethod.get());
@@ -1275,7 +1279,7 @@ public class TestCatalogWrapperForREST {
               .withSchema(new Schema(Types.NestedField.required(1, "id", Types.IntegerType.get())))
               .build();
 
-      LoadTableResponse response = wrapper.createTable(namespace, request, false);
+      LoadTableResponse response = wrapper.createTable(namespace, request, IcebergAccessDelegation.of(false, false));
 
       Assertions.assertEquals("/v1/upstream/namespaces/db/tables", requestPath.get());
       Assertions.assertEquals("POST", requestMethod.get());
@@ -1355,7 +1359,7 @@ public class TestCatalogWrapperForREST {
               .stageCreate()
               .build();
 
-      wrapper.createTable(namespace, request, false);
+      wrapper.createTable(namespace, request, IcebergAccessDelegation.of(false, false));
 
       CreateTableRequest forwarded =
           IcebergObjectMapper.getInstance().readValue(requestBody.get(), CreateTableRequest.class);
@@ -1438,7 +1442,7 @@ public class TestCatalogWrapperForREST {
               .metadataLocation("s3://bucket/db/tbl/metadata/v1.metadata.json")
               .build();
 
-      LoadTableResponse response = wrapper.registerTable(namespace, request, true);
+      LoadTableResponse response = wrapper.registerTable(namespace, request, IcebergAccessDelegation.of(true, false));
 
       Assertions.assertEquals("/v1/upstream/namespaces/db/register", requestPath.get());
       Assertions.assertEquals("POST", requestMethod.get());
@@ -1627,7 +1631,7 @@ public class TestCatalogWrapperForREST {
                   "/tmp/warehouse"));
       CatalogWrapperForREST wrapper = new StaticCatalogWrapperForREST("irc1", config, catalog);
 
-      LoadTableResponse response = wrapper.loadTable(ident, true, CredentialPrivilege.READ);
+      LoadTableResponse response = wrapper.loadTable(ident, IcebergAccessDelegation.of(true, false), CredentialPrivilege.READ);
 
       Assertions.assertEquals(
           "v1/irc1/namespaces/db/tables/tbl/credentials",
@@ -1707,7 +1711,7 @@ public class TestCatalogWrapperForREST {
                   "/tmp/warehouse"));
       CatalogWrapperForREST wrapper = new StaticCatalogWrapperForREST("irc1", config, catalog);
 
-      LoadTableResponse response = wrapper.loadTable(ident, true, CredentialPrivilege.READ);
+      LoadTableResponse response = wrapper.loadTable(ident, IcebergAccessDelegation.of(true, false), CredentialPrivilege.READ);
 
       Assertions.assertEquals(1, response.credentials().size());
       Credential credential = response.credentials().get(0);
@@ -1880,7 +1884,7 @@ public class TestCatalogWrapperForREST {
               .metadataLocation("s3://bucket/warehouse/tbl/metadata/v1.metadata.json")
               .build();
 
-      LoadTableResponse response = wrapper.registerTable(namespace, request, false);
+      LoadTableResponse response = wrapper.registerTable(namespace, request, IcebergAccessDelegation.of(false, false));
 
       Assertions.assertEquals("/v1/upstream/namespaces/db/register", requestPath.get());
       Assertions.assertEquals("POST", requestMethod.get());
@@ -1956,7 +1960,7 @@ public class TestCatalogWrapperForREST {
               .overwrite(true)
               .build();
 
-      wrapper.registerTable(namespace, request, false);
+      wrapper.registerTable(namespace, request, IcebergAccessDelegation.of(false, false));
 
       RegisterTableRequest forwarded =
           IcebergObjectMapper.getInstance()
@@ -2428,5 +2432,111 @@ public class TestCatalogWrapperForREST {
     public Catalog getCatalog() {
       return catalog;
     }
+  }
+
+  private static IcebergConfig remoteSigningTestConfig() {
+    return new IcebergConfig(
+        ImmutableMap.of(
+            IcebergConstants.CATALOG_BACKEND,
+            "memory",
+            IcebergConstants.WAREHOUSE,
+            "/tmp/warehouse",
+            CredentialConstants.CREDENTIAL_PROVIDERS,
+            S3SecretKeyCredential.S3_SECRET_KEY_CREDENTIAL_TYPE,
+            S3Properties.GRAVITINO_S3_ACCESS_KEY_ID,
+            "test-access-key",
+            S3Properties.GRAVITINO_S3_SECRET_ACCESS_KEY,
+            "test-secret-key"));
+  }
+
+  @Test
+  void testLoadTableRemoteSigningConfig() {
+    IcebergConfig config = remoteSigningTestConfig();
+
+    CatalogWrapperForREST wrapper = new CatalogWrapperForREST("irc-catalog", config);
+    Namespace namespace = Namespace.of("db");
+    Catalog catalog = wrapper.getCatalog();
+    ((SupportsNamespaces) catalog).createNamespace(namespace);
+    TableIdentifier table = TableIdentifier.of(namespace, "tbl");
+    Schema schema = new Schema(Types.NestedField.required(1, "id", Types.IntegerType.get()));
+    catalog.createTable(
+        table,
+        schema,
+        PartitionSpec.unpartitioned(),
+        "s3://bucket/wh/db/tbl",
+        Collections.emptyMap());
+
+    LoadTableResponse response =
+        wrapper.loadTable(
+            table, IcebergAccessDelegation.parse("remote-signing"), CredentialPrivilege.READ);
+
+    Assertions.assertEquals(
+        "true", response.config().get(IcebergConstants.ICEBERG_S3_REMOTE_SIGNING_ENABLED));
+    Assertions.assertEquals(
+        "v1/irc-catalog/namespaces/db/tables/tbl/sign",
+        response.config().get(RESTCatalogProperties.SIGNER_ENDPOINT));
+  }
+
+  @Test
+  void testRemoteSignPutObject() {
+    IcebergConfig config = remoteSigningTestConfig();
+
+    CatalogWrapperForREST wrapper = new CatalogWrapperForREST("irc-catalog", config);
+    Namespace namespace = Namespace.of("db");
+    Catalog catalog = wrapper.getCatalog();
+    ((SupportsNamespaces) catalog).createNamespace(namespace);
+    TableIdentifier table = TableIdentifier.of(namespace, "tbl");
+    Schema schema = new Schema(Types.NestedField.required(1, "id", Types.IntegerType.get()));
+    catalog.createTable(
+        table,
+        schema,
+        PartitionSpec.unpartitioned(),
+        "s3://bucket/wh/db/tbl",
+        Collections.emptyMap());
+
+    RemoteSignResponse response =
+        wrapper.remoteSign(
+            table,
+            ImmutableRemoteSignRequest.builder()
+                .region("us-east-1")
+                .method("PUT")
+                .uri(URI.create("s3://bucket/wh/db/tbl/data/file.parquet"))
+                .headers(Collections.emptyMap())
+                .build(),
+            CredentialPrivilege.WRITE);
+
+    Assertions.assertNotNull(response.uri());
+    Assertions.assertTrue(response.uri().toString().contains("bucket"));
+  }
+
+  @Test
+  void testRemoteSignRejectsUriOutsideTableLocation() {
+    IcebergConfig config = remoteSigningTestConfig();
+
+    CatalogWrapperForREST wrapper = new CatalogWrapperForREST("irc-catalog", config);
+    Namespace namespace = Namespace.of("db");
+    Catalog catalog = wrapper.getCatalog();
+    ((SupportsNamespaces) catalog).createNamespace(namespace);
+    TableIdentifier table = TableIdentifier.of(namespace, "tbl");
+    Schema schema = new Schema(Types.NestedField.required(1, "id", Types.IntegerType.get()));
+    catalog.createTable(
+        table,
+        schema,
+        PartitionSpec.unpartitioned(),
+        "s3://bucket/wh/db/tbl",
+        Collections.emptyMap());
+
+    Assertions.assertThrows(
+        ForbiddenException.class,
+        () ->
+            wrapper.remoteSign(
+                table,
+                ImmutableRemoteSignRequest.builder()
+                    .region("us-east-1")
+                    .method("PUT")
+                    .uri(URI.create("s3://other-bucket/data/file.parquet"))
+                    .headers(Collections.emptyMap())
+                    .build(),
+                CredentialPrivilege.WRITE));
   }
 }

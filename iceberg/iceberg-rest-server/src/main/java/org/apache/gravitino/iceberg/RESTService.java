@@ -184,18 +184,17 @@ public class RESTService implements GravitinoAuxiliaryService {
               icebergTableOperationDispatcher, namespaceOperationDispatcher);
     }
     IcebergTableOperationDispatcher icebergTableDispatcher =
-        new IcebergTableEventDispatcher(icebergTableOperationDispatcher, eventBus, metalakeName);
+        new IcebergTableEventDispatcher(icebergTableOperationDispatcher, eventBus);
 
     // View: EventDispatcher -> HookDispatcher -> OperationExecutor
     IcebergViewOperationDispatcher icebergViewOperationDispatcher =
         new IcebergViewOperationExecutor(icebergCatalogWrapperManager);
     if (authorizationContext.isAuthorizationEnabled()) {
       icebergViewOperationDispatcher =
-          new IcebergViewHookDispatcher(
-              icebergViewOperationDispatcher, namespaceOperationDispatcher, metalakeName);
+          new IcebergViewHookDispatcher(icebergViewOperationDispatcher, namespaceOperationDispatcher);
     }
     IcebergViewOperationDispatcher icebergViewDispatcher =
-        new IcebergViewEventDispatcher(icebergViewOperationDispatcher, eventBus, metalakeName);
+        new IcebergViewEventDispatcher(icebergViewOperationDispatcher, eventBus);
 
     // Namespace: EventDispatcher -> HookDispatcher -> OperationExecutor
     if (authorizationContext.isAuthorizationEnabled()) {
@@ -203,7 +202,7 @@ public class RESTService implements GravitinoAuxiliaryService {
           new IcebergNamespaceHookDispatcher(namespaceOperationDispatcher);
     }
     IcebergNamespaceOperationDispatcher icebergNamespaceDispatcher =
-        new IcebergNamespaceEventDispatcher(namespaceOperationDispatcher, eventBus, metalakeName);
+        new IcebergNamespaceEventDispatcher(namespaceOperationDispatcher, eventBus);
 
     config.register(
         new AbstractBinder() {

@@ -20,7 +20,6 @@
 package org.apache.gravitino.iceberg.service.dispatcher;
 
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
@@ -36,6 +35,7 @@ import org.apache.gravitino.catalog.CatalogManager;
 import org.apache.gravitino.catalog.CatalogTestUtils;
 import org.apache.gravitino.connector.BaseCatalog;
 import org.apache.gravitino.iceberg.service.CatalogWrapperForREST;
+import org.apache.gravitino.iceberg.service.IcebergAccessDelegation;
 import org.apache.gravitino.iceberg.service.IcebergCatalogWrapperManager;
 import org.apache.gravitino.iceberg.service.authorization.IcebergRESTServerContext;
 import org.apache.gravitino.iceberg.service.cleanup.IcebergCleanupJob;
@@ -176,7 +176,7 @@ class TestIcebergAsyncPurge {
                       .createTable(context(false), DB, createReq()));
       Assertions.assertTrue(e.getMessage().contains("being purged"), e.getMessage());
     }
-    verify(wrapper, never()).createTable(any(), any(), anyBoolean());
+    verify(wrapper, never()).createTable(any(), any(), any(IcebergAccessDelegation.class));
   }
 
   @Test
@@ -188,7 +188,7 @@ class TestIcebergAsyncPurge {
     try (MockedStatic<GravitinoEnv> ignored = mockCatalogId()) {
       tableExecutor(wrapper, Optional.of(cleanup)).createTable(context(false), DB, createReq());
     }
-    verify(wrapper).createTable(any(), any(), anyBoolean());
+    verify(wrapper).createTable(any(), any(), any(IcebergAccessDelegation.class));
   }
 
   @Test
@@ -206,7 +206,7 @@ class TestIcebergAsyncPurge {
                       .registerTable(context(false), DB, registerReq()));
       Assertions.assertTrue(e.getMessage().contains("being purged"), e.getMessage());
     }
-    verify(wrapper, never()).registerTable(any(), any(), anyBoolean());
+    verify(wrapper, never()).registerTable(any(), any(), any(IcebergAccessDelegation.class));
   }
 
   @Test
@@ -223,7 +223,7 @@ class TestIcebergAsyncPurge {
           .registerTable(context(false), DB, registerReq());
     }
     verify(wrapper).loadTableMetadataFromLocation("s3://b/db/t/metadata/0.json");
-    verify(wrapper).registerTable(any(), any(), anyBoolean());
+    verify(wrapper).registerTable(any(), any(), any(IcebergAccessDelegation.class));
   }
 
   // --- helpers ---
@@ -247,8 +247,12 @@ class TestIcebergAsyncPurge {
   private static IcebergRequestContext context(boolean asyncPurge) {
     IcebergRequestContext context = mock(IcebergRequestContext.class);
     when(context.catalogName()).thenReturn("cat");
+    // The prefix may be metalake-qualified; production code resolves the pair from it.
+    when(context.metalakeName()).thenReturn("test_metalake");
+    when(context.simpleCatalogName()).thenReturn("cat");
     when(context.userName()).thenReturn(asyncPurge ? "alice" : AuthConstants.ANONYMOUS_USER);
     when(context.asyncPurge()).thenReturn(asyncPurge);
+    when(context.accessDelegation()).thenReturn(IcebergAccessDelegation.none());
     return context;
   }
 

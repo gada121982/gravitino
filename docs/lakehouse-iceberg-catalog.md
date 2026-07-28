@@ -133,7 +133,7 @@ The following properties tune REST backend behavior:
 | `rest-backend-storage-credential-source`  | Who issues storage credentials through the Iceberg REST service: `remote` passes through the remote catalog's credentials, `local` issues them through this catalog's `credential-providers`. A `service-account` connection always uses `local`, regardless of this setting. | remote        | No       |
 
 - `vended-credentials`: request credential vending from the Iceberg REST server.
-- `remote-signing`: Gravitino doesn't support this mode yet.
+- `remote-signing`: request remote signing from the Iceberg REST server. The server returns `s3.remote-signing-enabled` and `signer.endpoint` on load/create/register, and signs S3 HTTP requests via `POST .../tables/{table}/sign`.
 
 Example: create an Iceberg catalog with the REST backend. This targets the default catalog and uses a REST path like `http://127.0.0.1:9001/iceberg/v1/namespaces/db/tables/table`.
 

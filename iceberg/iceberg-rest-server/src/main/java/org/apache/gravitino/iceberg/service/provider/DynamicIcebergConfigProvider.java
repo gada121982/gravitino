@@ -25,6 +25,8 @@ import com.google.common.base.Preconditions;
 import java.io.Closeable;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.Optional;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.gravitino.Catalog;
@@ -44,6 +46,7 @@ import org.apache.gravitino.exceptions.NoSuchCatalogException;
 import org.apache.gravitino.exceptions.NotFoundException;
 import org.apache.gravitino.exceptions.RESTException;
 import org.apache.gravitino.iceberg.common.IcebergConfig;
+import org.apache.gravitino.iceberg.service.IcebergRESTUtils;
 import org.apache.gravitino.iceberg.service.authorization.IcebergRESTServerContext;
 import org.apache.gravitino.secret.SupportsSecrets;
 import org.apache.gravitino.server.web.JettyServerConfig;
@@ -87,8 +90,15 @@ public class DynamicIcebergConfigProvider implements IcebergConfigProvider {
   public Optional<IcebergConfig> getIcebergCatalogConfig(String catalogName) {
     Preconditions.checkArgument(
         StringUtils.isNotBlank(catalogName), "blank catalogName is illegal");
-    if (catalogName.equals(IcebergConstants.ICEBERG_REST_DEFAULT_CATALOG)) {
-      catalogName =
+    // catalogName is the raw Iceberg REST prefix. Parse the addressed (metalake, catalog): a
+    // "{metalake}.{catalog}" prefix targets that metalake so one endpoint serves N metalakes;
+    // a plain prefix keeps the legacy behavior (server-configured metalake + prefix as catalog).
+    IcebergRESTUtils.MetalakeCatalog metalakeCatalog =
+        IcebergRESTUtils.parseMetalakeCatalog(catalogName);
+    String metalake = metalakeCatalog.metalake();
+    String simpleCatalogName = metalakeCatalog.catalog();
+    if (simpleCatalogName.equals(IcebergConstants.ICEBERG_REST_DEFAULT_CATALOG)) {
+      simpleCatalogName =
           defaultDynamicCatalogName.orElseThrow(
               () ->
                   new IllegalArgumentException(
@@ -102,7 +112,7 @@ public class DynamicIcebergConfigProvider implements IcebergConfigProvider {
     }
     Map<String, String> catalogProperties;
     try {
-      catalogProperties = getCatalogFetcher().loadCatalogProperties(catalogName);
+      catalogProperties = getCatalogFetcher().loadCatalogProperties(metalake, simpleCatalogName);
     } catch (NoSuchCatalogException e) {
       return Optional.empty();
     }
@@ -176,7 +186,7 @@ public class DynamicIcebergConfigProvider implements IcebergConfigProvider {
       if (catalogFetcher == null) {
         IcebergRESTServerContext serverContext = IcebergRESTServerContext.getInstance();
         if (serverContext.isAuxMode()) {
-          catalogFetcher = new InternalCatalogFetcher(gravitinoMetalake);
+          catalogFetcher = new InternalCatalogFetcher();
         } else {
           String uri = properties.get(IcebergConstants.GRAVITINO_URI);
           if (StringUtils.isBlank(uri)) {
@@ -188,7 +198,7 @@ public class DynamicIcebergConfigProvider implements IcebergConfigProvider {
           }
           Preconditions.checkArgument(
               StringUtils.isNotBlank(uri), IcebergConstants.GRAVITINO_URI + " is blank");
-          catalogFetcher = new HttpCatalogFetcher(uri, gravitinoMetalake, properties);
+          catalogFetcher = new HttpCatalogFetcher(uri, properties);
         }
       }
     }
@@ -292,11 +302,11 @@ public class DynamicIcebergConfigProvider implements IcebergConfigProvider {
 
   /** Interface for fetching catalog information. */
   interface CatalogFetcher extends Closeable {
-    Catalog loadCatalog(String catalogName) throws NoSuchCatalogException;
+    Catalog loadCatalog(String metalake, String catalogName) throws NoSuchCatalogException;
 
-    default Map<String, String> loadCatalogProperties(String catalogName)
+    default Map<String, String> loadCatalogProperties(String metalake, String catalogName)
         throws NoSuchCatalogException {
-      Catalog catalog = loadCatalog(catalogName);
+      Catalog catalog = loadCatalog(metalake, catalogName);
       return resolveProps(catalog);
     }
 
@@ -313,11 +323,11 @@ public class DynamicIcebergConfigProvider implements IcebergConfigProvider {
    * IcebergCatalogWrapper cache and CatalogManager cache.
    */
   private static class InternalCatalogFetcher implements CatalogFetcher {
-    private final String metalake;
     private final CatalogManager catalogManager;
 
-    InternalCatalogFetcher(String metalake) {
-      this.metalake = metalake;
+    InternalCatalogFetcher() {
+      // metalake is resolved per request from the prefix; the catalog manager is a global
+      // singleton, so no per-metalake state is kept here.
       CatalogManager manager;
       try {
         manager = GravitinoEnv.getInstance().catalogManager();
@@ -335,13 +345,13 @@ public class DynamicIcebergConfigProvider implements IcebergConfigProvider {
     }
 
     @Override
-    public Catalog loadCatalog(String catalogName) throws NoSuchCatalogException {
+    public Catalog loadCatalog(String metalake, String catalogName) throws NoSuchCatalogException {
       NameIdentifier catalogIdent = NameIdentifierUtil.ofCatalog(metalake, catalogName);
       return catalogManager.loadCatalog(catalogIdent);
     }
 
     @Override
-    public Map<String, String> loadCatalogProperties(String catalogName)
+    public Map<String, String> loadCatalogProperties(String metalake, String catalogName)
         throws NoSuchCatalogException {
       NameIdentifier catalogIdent = NameIdentifierUtil.ofCatalog(metalake, catalogName);
       return catalogManager.doWithCatalog(
@@ -360,40 +370,31 @@ public class DynamicIcebergConfigProvider implements IcebergConfigProvider {
    */
   private static class HttpCatalogFetcher implements CatalogFetcher {
     private final String uri;
-    private final String metalake;
     private final Map<String, String> properties;
-    private volatile GravitinoClient client;
+    // A GravitinoClient is bound to one metalake, and the metalake is resolved per request from
+    // the prefix, so keep one lazily created client per addressed metalake.
+    private final ConcurrentMap<String, GravitinoClient> clients = new ConcurrentHashMap<>();
 
-    HttpCatalogFetcher(String uri, String metalake, Map<String, String> properties) {
+    HttpCatalogFetcher(String uri, Map<String, String> properties) {
       this.uri = uri;
-      this.metalake = metalake;
       this.properties = properties;
     }
 
     @Override
-    public Catalog loadCatalog(String catalogName) throws NoSuchCatalogException {
-      return getGravitinoClient().loadCatalog(catalogName);
+    public Catalog loadCatalog(String metalake, String catalogName) throws NoSuchCatalogException {
+      return getGravitinoClient(metalake).loadCatalog(catalogName);
     }
 
     @Override
     public void close() {
-      if (client != null) {
-        client.close();
-      }
+      clients.values().forEach(GravitinoClient::close);
+      clients.clear();
     }
 
-    // Client is lazy loaded because the Gravitino server may not be started yet when the provider
-    // is initialized.
-    private GravitinoClient getGravitinoClient() {
-      if (client != null) {
-        return client;
-      }
-      synchronized (this) {
-        if (client == null) {
-          client = createGravitinoClient(uri, metalake, properties);
-        }
-      }
-      return client;
+    // Clients are lazy loaded because the Gravitino server may not be started yet when the
+    // provider is initialized.
+    private GravitinoClient getGravitinoClient(String metalake) {
+      return clients.computeIfAbsent(metalake, m -> createGravitinoClient(uri, m, properties));
     }
   }
 }
