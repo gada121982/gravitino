@@ -42,6 +42,7 @@ import org.apache.gravitino.credential.JdbcCredential;
 import org.apache.gravitino.credential.SupportsCredentials;
 import org.apache.gravitino.exceptions.NoSuchCatalogException;
 import org.apache.gravitino.iceberg.common.IcebergConfig;
+import org.apache.gravitino.iceberg.service.IcebergRESTUtils;
 import org.apache.gravitino.iceberg.service.authorization.IcebergRESTServerContext;
 import org.apache.gravitino.server.web.JettyServerConfig;
 import org.apache.gravitino.utils.MapUtils;
@@ -80,8 +81,15 @@ public class DynamicIcebergConfigProvider implements IcebergConfigProvider {
   public Optional<IcebergConfig> getIcebergCatalogConfig(String catalogName) {
     Preconditions.checkArgument(
         StringUtils.isNotBlank(catalogName), "blank catalogName is illegal");
-    if (catalogName.equals(IcebergConstants.ICEBERG_REST_DEFAULT_CATALOG)) {
-      catalogName =
+    // catalogName is the raw Iceberg REST prefix. Parse the addressed (metalake, catalog): a
+    // "{metalake}.{catalog}" prefix targets that metalake so one endpoint serves N metalakes;
+    // a plain prefix keeps the legacy behavior (server-configured metalake + prefix as catalog).
+    IcebergRESTUtils.MetalakeCatalog metalakeCatalog =
+        IcebergRESTUtils.parseMetalakeCatalog(catalogName);
+    String metalake = metalakeCatalog.metalake();
+    String simpleCatalogName = metalakeCatalog.catalog();
+    if (simpleCatalogName.equals(IcebergConstants.ICEBERG_REST_DEFAULT_CATALOG)) {
+      simpleCatalogName =
           defaultDynamicCatalogName.orElseThrow(
               () ->
                   new IllegalArgumentException(
@@ -95,14 +103,14 @@ public class DynamicIcebergConfigProvider implements IcebergConfigProvider {
     }
     Catalog catalog;
     try {
-      catalog = getCatalogFetcher().loadCatalog(catalogName);
+      catalog = getCatalogFetcher().loadCatalog(metalake, simpleCatalogName);
     } catch (NoSuchCatalogException e) {
       return Optional.empty();
     }
 
     Preconditions.checkArgument(
         "lakehouse-iceberg".equals(catalog.provider()),
-        String.format("%s.%s is not iceberg catalog", gravitinoMetalake, catalogName));
+        String.format("%s.%s is not iceberg catalog", metalake, simpleCatalogName));
 
     // Sensitive credentials (e.g. jdbc-password) are marked hidden in PropertiesMetadata and
     // filtered out of catalog.properties(). We need two different strategies to recover them:
@@ -264,7 +272,7 @@ public class DynamicIcebergConfigProvider implements IcebergConfigProvider {
 
   /** Interface for fetching catalog information. */
   interface CatalogFetcher extends Closeable {
-    Catalog loadCatalog(String catalogName) throws NoSuchCatalogException;
+    Catalog loadCatalog(String metalake, String catalogName) throws NoSuchCatalogException;
 
     @Override
     default void close() {}
@@ -279,11 +287,11 @@ public class DynamicIcebergConfigProvider implements IcebergConfigProvider {
    * IcebergCatalogWrapper cache and CatalogManager cache.
    */
   private static class InternalCatalogFetcher implements CatalogFetcher {
-    private final String metalake;
     private final CatalogDispatcher catalogDispatcher;
 
     InternalCatalogFetcher(String metalake) {
-      this.metalake = metalake;
+      // metalake is now resolved per-request from the prefix; the internal dispatcher is a global
+      // singleton, so no per-metalake state is kept here.
       CatalogDispatcher dispatcher = GravitinoEnv.getInstance().internalCatalogDispatcher();
       Preconditions.checkState(
           dispatcher != null,
@@ -293,7 +301,7 @@ public class DynamicIcebergConfigProvider implements IcebergConfigProvider {
     }
 
     @Override
-    public Catalog loadCatalog(String catalogName) throws NoSuchCatalogException {
+    public Catalog loadCatalog(String metalake, String catalogName) throws NoSuchCatalogException {
       NameIdentifier catalogIdent = NameIdentifierUtil.ofCatalog(metalake, catalogName);
       return catalogDispatcher.loadCatalog(catalogIdent);
     }
@@ -305,6 +313,8 @@ public class DynamicIcebergConfigProvider implements IcebergConfigProvider {
    */
   private static class HttpCatalogFetcher implements CatalogFetcher {
     private final String uri;
+    // Default metalake used only to build the lazy GravitinoClient; the effective metalake per
+    // request comes from the loadCatalog parameter (resolved from the prefix).
     private final String metalake;
     private final Map<String, String> properties;
     private volatile GravitinoClient client;
@@ -316,7 +326,7 @@ public class DynamicIcebergConfigProvider implements IcebergConfigProvider {
     }
 
     @Override
-    public Catalog loadCatalog(String catalogName) throws NoSuchCatalogException {
+    public Catalog loadCatalog(String metalake, String catalogName) throws NoSuchCatalogException {
       return getGravitinoClient().loadMetalake(metalake).loadCatalog(catalogName);
     }
 

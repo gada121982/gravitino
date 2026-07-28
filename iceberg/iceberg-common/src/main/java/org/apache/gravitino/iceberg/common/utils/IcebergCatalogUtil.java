@@ -143,6 +143,15 @@ public class IcebergCatalogUtil {
     Map<String, String> properties = Maps.newHashMap(icebergConfig.getIcebergCatalogProperties());
     applyDefaultResolvingFileIO(properties);
 
+    // A Gravitino catalog may carry a "prefix" property meaning an S3 key-prefix (a redundant
+    // duplicate of the upstream warehouse's own key-prefix, e.g. Lakekeeper's storage-profile
+    // key-prefix). Iceberg's RESTCatalog, however, treats "prefix" as the reserved REST path
+    // segment and forwards it to the upstream catalog as the warehouse identifier — which the
+    // upstream rejects ("Provided WarehouseId is not a valid UUID"). Strip it so the federated
+    // client addresses the upstream catalog purely via uri + warehouse; storage-level prefixing
+    // is already enforced by the upstream warehouse and must not leak into REST routing.
+    properties.remove("prefix");
+
     // REST catalog must use forward access token from the user request
     properties.put(AuthProperties.AUTH_TYPE, UserPrincipalForwardingAuthManager.class.getName());
     applyRestCatalogHttpTimeoutProperties(icebergConfig, properties);

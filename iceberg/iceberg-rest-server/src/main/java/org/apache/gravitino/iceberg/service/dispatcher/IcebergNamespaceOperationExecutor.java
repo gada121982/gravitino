@@ -127,10 +127,14 @@ public class IcebergNamespaceOperationExecutor implements IcebergNamespaceOperat
       Namespace namespace,
       RegisterTableRequest registerTableRequest) {
     IcebergCleanupHelper.rejectIfBeingPurged(
-        cleanupManager, context.catalogName(), namespace, registerTableRequest.name());
+        cleanupManager,
+        context.metalakeName(),
+        context.simpleCatalogName(),
+        namespace,
+        registerTableRequest.name());
 
     return icebergCatalogWrapperManager
         .getCatalogWrapper(context.catalogName())
-        .registerTable(namespace, registerTableRequest, context.requestCredentialVending());
+        .registerTable(namespace, registerTableRequest, context.accessDelegation());
   }
 }

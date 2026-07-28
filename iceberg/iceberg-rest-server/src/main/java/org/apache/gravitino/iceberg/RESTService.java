@@ -152,7 +152,7 @@ public class RESTService implements GravitinoAuxiliaryService {
     IcebergTableOperationDispatcher icebergTableOperationDispatcher =
         new IcebergTableOperationExecutor(icebergCatalogWrapperManager, cleanupManager);
     IcebergTableOperationDispatcher icebergTableEventDispatcher =
-        new IcebergTableEventDispatcher(icebergTableOperationDispatcher, eventBus, metalakeName);
+        new IcebergTableEventDispatcher(icebergTableOperationDispatcher, eventBus);
     if (authorizationContext.isAuthorizationEnabled()) {
       icebergTableEventDispatcher =
           new IcebergTableHookDispatcher(icebergTableEventDispatcher, namespaceOperationDispatcher);
@@ -163,17 +163,16 @@ public class RESTService implements GravitinoAuxiliaryService {
     IcebergViewOperationDispatcher icebergViewOperationDispatcher =
         new IcebergViewOperationExecutor(icebergCatalogWrapperManager);
     IcebergViewOperationDispatcher icebergViewEventDispatcher =
-        new IcebergViewEventDispatcher(icebergViewOperationDispatcher, eventBus, metalakeName);
+        new IcebergViewEventDispatcher(icebergViewOperationDispatcher, eventBus);
     if (authorizationContext.isAuthorizationEnabled()) {
       icebergViewEventDispatcher =
-          new IcebergViewHookDispatcher(
-              icebergViewEventDispatcher, namespaceOperationDispatcher, metalakeName);
+          new IcebergViewHookDispatcher(icebergViewEventDispatcher, namespaceOperationDispatcher);
     }
     IcebergViewOperationDispatcher icebergViewDispatcher = icebergViewEventDispatcher;
 
     // Namespace: HookDispatcher -> EventDispatcher -> OperationExecutor
     IcebergNamespaceOperationDispatcher icebergNamespaceEventDispatcher =
-        new IcebergNamespaceEventDispatcher(namespaceOperationDispatcher, eventBus, metalakeName);
+        new IcebergNamespaceEventDispatcher(namespaceOperationDispatcher, eventBus);
     if (authorizationContext.isAuthorizationEnabled()) {
       icebergNamespaceEventDispatcher =
           new IcebergNamespaceHookDispatcher(icebergNamespaceEventDispatcher);

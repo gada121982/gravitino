@@ -20,7 +20,6 @@
 package org.apache.gravitino.iceberg.service.dispatcher;
 
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -30,6 +29,7 @@ import java.util.Map;
 import java.util.Optional;
 import org.apache.gravitino.catalog.lakehouse.iceberg.IcebergConstants;
 import org.apache.gravitino.iceberg.service.CatalogWrapperForREST;
+import org.apache.gravitino.iceberg.service.IcebergAccessDelegation;
 import org.apache.gravitino.iceberg.service.IcebergCatalogWrapperManager;
 import org.apache.gravitino.listener.api.event.IcebergRequestContext;
 import org.apache.iceberg.Schema;
@@ -61,7 +61,10 @@ public class TestIcebergTableOperationExecutor {
 
     mockContext = mock(IcebergRequestContext.class);
     when(mockContext.catalogName()).thenReturn("test_catalog");
-    when(mockContext.requestCredentialVending()).thenReturn(false);
+    // The prefix may be metalake-qualified; production code resolves the pair from it.
+    when(mockContext.metalakeName()).thenReturn("test_metalake");
+    when(mockContext.simpleCatalogName()).thenReturn("test_catalog");
+    when(mockContext.accessDelegation()).thenReturn(IcebergAccessDelegation.none());
     when(mockWrapperManager.getCatalogWrapper("test_catalog")).thenReturn(mockCatalogWrapper);
   }
 
@@ -82,13 +85,15 @@ public class TestIcebergTableOperationExecutor {
 
     when(mockContext.userName()).thenReturn(authenticatedUser);
     LoadTableResponse mockResponse = mock(LoadTableResponse.class);
-    when(mockCatalogWrapper.createTable(any(), any(), anyBoolean())).thenReturn(mockResponse);
+    when(mockCatalogWrapper.createTable(any(), any(), any(IcebergAccessDelegation.class)))
+        .thenReturn(mockResponse);
 
     executor.createTable(mockContext, Namespace.of("test_namespace"), originalRequest);
 
     ArgumentCaptor<CreateTableRequest> requestCaptor =
         ArgumentCaptor.forClass(CreateTableRequest.class);
-    verify(mockCatalogWrapper).createTable(any(), requestCaptor.capture(), anyBoolean());
+    verify(mockCatalogWrapper)
+        .createTable(any(), requestCaptor.capture(), any(IcebergAccessDelegation.class));
 
     CreateTableRequest capturedRequest = requestCaptor.getValue();
     String actualOwner = capturedRequest.properties().get(IcebergConstants.OWNER);
@@ -106,13 +111,15 @@ public class TestIcebergTableOperationExecutor {
 
     when(mockContext.userName()).thenReturn(authenticatedUser);
     LoadTableResponse mockResponse = mock(LoadTableResponse.class);
-    when(mockCatalogWrapper.createTable(any(), any(), anyBoolean())).thenReturn(mockResponse);
+    when(mockCatalogWrapper.createTable(any(), any(), any(IcebergAccessDelegation.class)))
+        .thenReturn(mockResponse);
 
     executor.createTable(mockContext, Namespace.of("test_namespace"), originalRequest);
 
     ArgumentCaptor<CreateTableRequest> requestCaptor =
         ArgumentCaptor.forClass(CreateTableRequest.class);
-    verify(mockCatalogWrapper).createTable(any(), requestCaptor.capture(), anyBoolean());
+    verify(mockCatalogWrapper)
+        .createTable(any(), requestCaptor.capture(), any(IcebergAccessDelegation.class));
 
     String actualOwner = requestCaptor.getValue().properties().get(IcebergConstants.OWNER);
     Assertions.assertEquals(authenticatedUser, actualOwner);
@@ -134,13 +141,15 @@ public class TestIcebergTableOperationExecutor {
 
     when(mockContext.userName()).thenReturn("anonymous");
     LoadTableResponse mockResponse = mock(LoadTableResponse.class);
-    when(mockCatalogWrapper.createTable(any(), any(), anyBoolean())).thenReturn(mockResponse);
+    when(mockCatalogWrapper.createTable(any(), any(), any(IcebergAccessDelegation.class)))
+        .thenReturn(mockResponse);
 
     executor.createTable(mockContext, Namespace.of("test_namespace"), originalRequest);
 
     ArgumentCaptor<CreateTableRequest> requestCaptor =
         ArgumentCaptor.forClass(CreateTableRequest.class);
-    verify(mockCatalogWrapper).createTable(any(), requestCaptor.capture(), anyBoolean());
+    verify(mockCatalogWrapper)
+        .createTable(any(), requestCaptor.capture(), any(IcebergAccessDelegation.class));
 
     String actualOwner = requestCaptor.getValue().properties().get(IcebergConstants.OWNER);
     Assertions.assertEquals(clientProvidedOwner, actualOwner);
@@ -150,7 +159,8 @@ public class TestIcebergTableOperationExecutor {
   public void testCreateTablePreservesStageCreateTrue() {
     when(mockContext.userName()).thenReturn("user@example.com");
     LoadTableResponse mockResponse = mock(LoadTableResponse.class);
-    when(mockCatalogWrapper.createTable(any(), any(), anyBoolean())).thenReturn(mockResponse);
+    when(mockCatalogWrapper.createTable(any(), any(), any(IcebergAccessDelegation.class)))
+        .thenReturn(mockResponse);
 
     CreateTableRequest stagedRequest =
         CreateTableRequest.builder()
@@ -163,7 +173,8 @@ public class TestIcebergTableOperationExecutor {
 
     ArgumentCaptor<CreateTableRequest> requestCaptor =
         ArgumentCaptor.forClass(CreateTableRequest.class);
-    verify(mockCatalogWrapper).createTable(any(), requestCaptor.capture(), anyBoolean());
+    verify(mockCatalogWrapper)
+        .createTable(any(), requestCaptor.capture(), any(IcebergAccessDelegation.class));
 
     Assertions.assertTrue(
         requestCaptor.getValue().stageCreate(),
@@ -174,7 +185,8 @@ public class TestIcebergTableOperationExecutor {
   public void testCreateTablePreservesStageCreateFalse() {
     when(mockContext.userName()).thenReturn("user@example.com");
     LoadTableResponse mockResponse = mock(LoadTableResponse.class);
-    when(mockCatalogWrapper.createTable(any(), any(), anyBoolean())).thenReturn(mockResponse);
+    when(mockCatalogWrapper.createTable(any(), any(), any(IcebergAccessDelegation.class)))
+        .thenReturn(mockResponse);
 
     CreateTableRequest normalRequest =
         CreateTableRequest.builder().withName("test_table").withSchema(TABLE_SCHEMA).build();
@@ -183,7 +195,8 @@ public class TestIcebergTableOperationExecutor {
 
     ArgumentCaptor<CreateTableRequest> requestCaptor =
         ArgumentCaptor.forClass(CreateTableRequest.class);
-    verify(mockCatalogWrapper).createTable(any(), requestCaptor.capture(), anyBoolean());
+    verify(mockCatalogWrapper)
+        .createTable(any(), requestCaptor.capture(), any(IcebergAccessDelegation.class));
 
     Assertions.assertFalse(
         requestCaptor.getValue().stageCreate(),

@@ -20,6 +20,7 @@
 package org.apache.gravitino.iceberg.service;
 
 import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyBoolean;
 import static org.mockito.Mockito.anyMap;
 import static org.mockito.Mockito.anyString;
 import static org.mockito.Mockito.doAnswer;
@@ -33,6 +34,7 @@ import com.google.common.collect.ImmutableMap;
 import com.sun.net.httpserver.HttpServer;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -45,8 +47,10 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.apache.gravitino.catalog.lakehouse.iceberg.IcebergConstants;
 import org.apache.gravitino.credential.CredentialConstants;
 import org.apache.gravitino.credential.CredentialPrivilege;
+import org.apache.gravitino.credential.S3SecretKeyCredential;
 import org.apache.gravitino.iceberg.common.IcebergConfig;
 import org.apache.gravitino.iceberg.service.extension.DummyCredentialProvider;
+import org.apache.gravitino.storage.S3Properties;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.BaseTransaction;
 import org.apache.iceberg.CatalogProperties;
@@ -72,14 +76,17 @@ import org.apache.iceberg.io.ResolvingFileIO;
 import org.apache.iceberg.io.StorageCredential;
 import org.apache.iceberg.io.SupportsStorageCredentials;
 import org.apache.iceberg.rest.RESTCatalog;
+import org.apache.iceberg.rest.RESTCatalogProperties;
 import org.apache.iceberg.rest.auth.AuthProperties;
 import org.apache.iceberg.rest.credentials.Credential;
 import org.apache.iceberg.rest.requests.CreateTableRequest;
 import org.apache.iceberg.rest.requests.ImmutableRegisterTableRequest;
+import org.apache.iceberg.rest.requests.ImmutableRemoteSignRequest;
 import org.apache.iceberg.rest.requests.RegisterTableRequest;
 import org.apache.iceberg.rest.requests.UpdateTableRequest;
 import org.apache.iceberg.rest.responses.LoadCredentialsResponse;
 import org.apache.iceberg.rest.responses.LoadTableResponse;
+import org.apache.iceberg.rest.responses.RemoteSignResponse;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -417,6 +424,97 @@ public class TestCatalogWrapperForREST {
   }
 
   @Test
+  void testLoadTableRemoteSigningConfig() {
+    IcebergConfig config = remoteSigningTestConfig();
+
+    CatalogWrapperForREST wrapper = new CatalogWrapperForREST("irc-catalog", config);
+    Namespace namespace = Namespace.of("db");
+    Catalog catalog = wrapper.getCatalog();
+    ((SupportsNamespaces) catalog).createNamespace(namespace);
+    TableIdentifier table = TableIdentifier.of(namespace, "tbl");
+    Schema schema = new Schema(Types.NestedField.required(1, "id", Types.IntegerType.get()));
+    catalog.createTable(
+        table,
+        schema,
+        PartitionSpec.unpartitioned(),
+        "s3://bucket/wh/db/tbl",
+        Collections.emptyMap());
+
+    LoadTableResponse response =
+        wrapper.loadTable(
+            table, IcebergAccessDelegation.parse("remote-signing"), CredentialPrivilege.READ);
+
+    Assertions.assertEquals(
+        "true", response.config().get(IcebergConstants.ICEBERG_S3_REMOTE_SIGNING_ENABLED));
+    Assertions.assertEquals(
+        "v1/irc-catalog/namespaces/db/tables/tbl/sign",
+        response.config().get(RESTCatalogProperties.SIGNER_ENDPOINT));
+  }
+
+  @Test
+  void testRemoteSignPutObject() {
+    IcebergConfig config = remoteSigningTestConfig();
+
+    CatalogWrapperForREST wrapper = new CatalogWrapperForREST("irc-catalog", config);
+    Namespace namespace = Namespace.of("db");
+    Catalog catalog = wrapper.getCatalog();
+    ((SupportsNamespaces) catalog).createNamespace(namespace);
+    TableIdentifier table = TableIdentifier.of(namespace, "tbl");
+    Schema schema = new Schema(Types.NestedField.required(1, "id", Types.IntegerType.get()));
+    catalog.createTable(
+        table,
+        schema,
+        PartitionSpec.unpartitioned(),
+        "s3://bucket/wh/db/tbl",
+        Collections.emptyMap());
+
+    RemoteSignResponse response =
+        wrapper.remoteSign(
+            table,
+            ImmutableRemoteSignRequest.builder()
+                .region("us-east-1")
+                .method("PUT")
+                .uri(URI.create("s3://bucket/wh/db/tbl/data/file.parquet"))
+                .headers(Collections.emptyMap())
+                .build(),
+            CredentialPrivilege.WRITE);
+
+    Assertions.assertNotNull(response.uri());
+    Assertions.assertTrue(response.uri().toString().contains("bucket"));
+  }
+
+  @Test
+  void testRemoteSignRejectsUriOutsideTableLocation() {
+    IcebergConfig config = remoteSigningTestConfig();
+
+    CatalogWrapperForREST wrapper = new CatalogWrapperForREST("irc-catalog", config);
+    Namespace namespace = Namespace.of("db");
+    Catalog catalog = wrapper.getCatalog();
+    ((SupportsNamespaces) catalog).createNamespace(namespace);
+    TableIdentifier table = TableIdentifier.of(namespace, "tbl");
+    Schema schema = new Schema(Types.NestedField.required(1, "id", Types.IntegerType.get()));
+    catalog.createTable(
+        table,
+        schema,
+        PartitionSpec.unpartitioned(),
+        "s3://bucket/wh/db/tbl",
+        Collections.emptyMap());
+
+    Assertions.assertThrows(
+        ForbiddenException.class,
+        () ->
+            wrapper.remoteSign(
+                table,
+                ImmutableRemoteSignRequest.builder()
+                    .region("us-east-1")
+                    .method("PUT")
+                    .uri(URI.create("s3://other-bucket/data/file.parquet"))
+                    .headers(Collections.emptyMap())
+                    .build(),
+                CredentialPrivilege.WRITE));
+  }
+
+  @Test
   void testValidateCredentialLocation() {
     Assertions.assertDoesNotThrow(
         () -> CatalogWrapperForREST.validateCredentialLocation("/tmp/warehouse"));
@@ -468,7 +566,9 @@ public class TestCatalogWrapperForREST {
                 "/tmp/warehouse"));
     CatalogWrapperForREST wrapper = new StaticCatalogWrapperForREST("irc1", config, catalog);
 
-    LoadTableResponse response = wrapper.loadTable(ident, false, CredentialPrivilege.READ);
+    LoadTableResponse response =
+        wrapper.loadTable(
+            ident, IcebergAccessDelegation.parse("vended-credentials"), CredentialPrivilege.READ);
 
     Assertions.assertEquals(
         "v1/irc1/namespaces/db/tables/tbl/credentials",
@@ -524,7 +624,9 @@ public class TestCatalogWrapperForREST {
                 "/tmp/warehouse"));
     CatalogWrapperForREST wrapper = new StaticCatalogWrapperForREST("irc1", config, catalog);
 
-    LoadTableResponse response = wrapper.loadTable(ident, false, CredentialPrivilege.READ);
+    LoadTableResponse response =
+        wrapper.loadTable(
+            ident, IcebergAccessDelegation.parse("vended-credentials"), CredentialPrivilege.READ);
 
     Assertions.assertEquals(1, response.credentials().size());
     Credential credential = response.credentials().get(0);
@@ -654,12 +756,50 @@ public class TestCatalogWrapperForREST {
             .metadataLocation("s3://bucket/warehouse/tbl/metadata/v1.metadata.json")
             .build();
 
-    LoadTableResponse response = wrapper.registerTable(Namespace.of("db"), request, false);
+    LoadTableResponse response =
+        wrapper.registerTable(Namespace.of("db"), request, IcebergAccessDelegation.none());
 
     Assertions.assertEquals(
         "org.apache.iceberg.aws.s3.S3FileIO", response.config().get(IcebergConstants.IO_IMPL));
     Assertions.assertEquals(
         "http://localhost:9000", response.config().get(IcebergConstants.ICEBERG_S3_ENDPOINT));
+  }
+
+  @Test
+  void testFederatedRegisterTableOverwrite() {
+    RESTCatalog catalog = mock(RESTCatalog.class);
+    BaseTable table = mock(BaseTable.class);
+    TableOperations ops = mock(TableOperations.class);
+    FileIO fileIO = mock(FileIO.class);
+    TableIdentifier ident = TableIdentifier.of("db", "tbl");
+    when(catalog.registerTable(any(TableIdentifier.class), anyString(), anyBoolean()))
+        .thenReturn(table);
+    when(catalog.loadTable(ident)).thenReturn(table);
+    when(table.operations()).thenReturn(ops);
+    when(ops.current()).thenReturn(minimalTableMetadataForStagedCreateTest());
+    when(table.io()).thenReturn(fileIO);
+    when(fileIO.properties()).thenReturn(ImmutableMap.of());
+
+    IcebergConfig config =
+        new IcebergConfig(
+            ImmutableMap.of(
+                IcebergConstants.CATALOG_BACKEND,
+                "memory",
+                IcebergConstants.WAREHOUSE,
+                "/tmp/warehouse"));
+    CatalogWrapperForREST wrapper = new StaticCatalogWrapperForREST("test", config, catalog);
+
+    RegisterTableRequest request =
+        ImmutableRegisterTableRequest.builder()
+            .name("tbl")
+            .metadataLocation("s3://bucket/warehouse/tbl/metadata/v2.metadata.json")
+            .overwrite(true)
+            .build();
+
+    wrapper.registerTable(Namespace.of("db"), request, IcebergAccessDelegation.none());
+
+    verify(catalog).registerTable(ident, request.metadataLocation(), true);
+    verify(catalog).loadTable(ident);
   }
 
   @Test
@@ -722,7 +862,8 @@ public class TestCatalogWrapperForREST {
             .stageCreate()
             .build();
 
-    LoadTableResponse response = wrapper.createTable(Namespace.of("db"), request, false);
+    LoadTableResponse response =
+        wrapper.createTable(Namespace.of("db"), request, IcebergAccessDelegation.none());
 
     Assertions.assertEquals(
         "org.apache.iceberg.aws.s3.S3FileIO", response.config().get(IcebergConstants.IO_IMPL));
@@ -767,7 +908,8 @@ public class TestCatalogWrapperForREST {
     CreateTableRequest request =
         CreateTableRequest.builder().withName("tbl").withSchema(schema).stageCreate().build();
 
-    LoadTableResponse response = wrapper.createTable(Namespace.of("db"), request, false);
+    LoadTableResponse response =
+        wrapper.createTable(Namespace.of("db"), request, IcebergAccessDelegation.none());
 
     Assertions.assertEquals(
         "org.apache.iceberg.aws.s3.S3FileIO", response.config().get(IcebergConstants.IO_IMPL));
@@ -1014,6 +1156,21 @@ public class TestCatalogWrapperForREST {
 
   // Extends FederatedCatalogWrapper so table operations route through the federation-aware
   // *Internal paths (FileIO extraction) against the injected catalog.
+  private static IcebergConfig remoteSigningTestConfig() {
+    return new IcebergConfig(
+        ImmutableMap.of(
+            IcebergConstants.CATALOG_BACKEND,
+            "memory",
+            IcebergConstants.WAREHOUSE,
+            "/tmp/warehouse",
+            CredentialConstants.CREDENTIAL_PROVIDERS,
+            S3SecretKeyCredential.S3_SECRET_KEY_CREDENTIAL_TYPE,
+            S3Properties.GRAVITINO_S3_ACCESS_KEY_ID,
+            "test-access-key",
+            S3Properties.GRAVITINO_S3_SECRET_ACCESS_KEY,
+            "test-secret-key"));
+  }
+
   private static class StaticCatalogWrapperForREST extends FederatedCatalogWrapper {
     private final Catalog catalog;
 

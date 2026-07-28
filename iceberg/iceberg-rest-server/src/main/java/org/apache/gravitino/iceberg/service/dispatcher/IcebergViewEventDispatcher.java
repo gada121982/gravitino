@@ -64,15 +64,11 @@ public class IcebergViewEventDispatcher implements IcebergViewOperationDispatche
 
   private IcebergViewOperationDispatcher icebergViewOperationDispatcher;
   private EventBus eventBus;
-  private String metalakeName;
 
   public IcebergViewEventDispatcher(
-      IcebergViewOperationDispatcher icebergViewOperationDispatcher,
-      EventBus eventBus,
-      String metalakeName) {
+      IcebergViewOperationDispatcher icebergViewOperationDispatcher, EventBus eventBus) {
     this.icebergViewOperationDispatcher = icebergViewOperationDispatcher;
     this.eventBus = eventBus;
-    this.metalakeName = metalakeName;
   }
 
   @Override
@@ -81,7 +77,7 @@ public class IcebergViewEventDispatcher implements IcebergViewOperationDispatche
     TableIdentifier viewIdentifier = TableIdentifier.of(namespace, createViewRequest.name());
     NameIdentifier nameIdentifier =
         IcebergRESTUtils.getGravitinoNameIdentifier(
-            metalakeName, context.catalogName(), viewIdentifier);
+            context.metalakeName(), context.simpleCatalogName(), viewIdentifier);
     Optional<BaseEvent> transformedEvent =
         eventBus.dispatchEvent(
             new IcebergCreateViewPreEvent(context, nameIdentifier, createViewRequest));
@@ -111,7 +107,7 @@ public class IcebergViewEventDispatcher implements IcebergViewOperationDispatche
       UpdateTableRequest replaceViewRequest) {
     NameIdentifier gravitinoNameIdentifier =
         IcebergRESTUtils.getGravitinoNameIdentifier(
-            metalakeName, context.catalogName(), viewIdentifier);
+            context.metalakeName(), context.simpleCatalogName(), viewIdentifier);
     Optional<BaseEvent> transformedEvent =
         eventBus.dispatchEvent(
             new IcebergReplaceViewPreEvent(context, gravitinoNameIdentifier, replaceViewRequest));
@@ -141,7 +137,7 @@ public class IcebergViewEventDispatcher implements IcebergViewOperationDispatche
   public void dropView(IcebergRequestContext context, TableIdentifier viewIdentifier) {
     NameIdentifier gravitinoNameIdentifier =
         IcebergRESTUtils.getGravitinoNameIdentifier(
-            metalakeName, context.catalogName(), viewIdentifier);
+            context.metalakeName(), context.simpleCatalogName(), viewIdentifier);
     eventBus.dispatchEvent(new IcebergDropViewPreEvent(context, gravitinoNameIdentifier));
     try {
       icebergViewOperationDispatcher.dropView(context, viewIdentifier);
@@ -156,7 +152,7 @@ public class IcebergViewEventDispatcher implements IcebergViewOperationDispatche
   public LoadViewResponse loadView(IcebergRequestContext context, TableIdentifier viewIdentifier) {
     NameIdentifier gravitinoNameIdentifier =
         IcebergRESTUtils.getGravitinoNameIdentifier(
-            metalakeName, context.catalogName(), viewIdentifier);
+            context.metalakeName(), context.simpleCatalogName(), viewIdentifier);
     eventBus.dispatchEvent(new IcebergLoadViewPreEvent(context, gravitinoNameIdentifier));
     LoadViewResponse loadViewResponse;
     try {
@@ -173,7 +169,8 @@ public class IcebergViewEventDispatcher implements IcebergViewOperationDispatche
   @Override
   public ListTablesResponse listView(IcebergRequestContext context, Namespace namespace) {
     NameIdentifier gravitinoNameIdentifier =
-        IcebergRESTUtils.getGravitinoNameIdentifier(metalakeName, context.catalogName(), namespace);
+        IcebergRESTUtils.getGravitinoNameIdentifier(
+            context.metalakeName(), context.simpleCatalogName(), namespace);
     eventBus.dispatchEvent(new IcebergListViewPreEvent(context, gravitinoNameIdentifier));
     try {
       ListTablesResponse listViewsResponse =
@@ -193,7 +190,7 @@ public class IcebergViewEventDispatcher implements IcebergViewOperationDispatche
   public boolean viewExists(IcebergRequestContext context, TableIdentifier viewIdentifier) {
     NameIdentifier gravitinoNameIdentifier =
         IcebergRESTUtils.getGravitinoNameIdentifier(
-            metalakeName, context.catalogName(), viewIdentifier);
+            context.metalakeName(), context.simpleCatalogName(), viewIdentifier);
     eventBus.dispatchEvent(new IcebergViewExistsPreEvent(context, gravitinoNameIdentifier));
     boolean isExists;
     try {
@@ -212,7 +209,7 @@ public class IcebergViewEventDispatcher implements IcebergViewOperationDispatche
     TableIdentifier sourceView = renameViewRequest.source();
     NameIdentifier gravitinoNameIdentifier =
         IcebergRESTUtils.getGravitinoNameIdentifier(
-            metalakeName, context.catalogName(), sourceView);
+            context.metalakeName(), context.simpleCatalogName(), sourceView);
     eventBus.dispatchEvent(
         new IcebergRenameViewPreEvent(context, gravitinoNameIdentifier, renameViewRequest));
     try {

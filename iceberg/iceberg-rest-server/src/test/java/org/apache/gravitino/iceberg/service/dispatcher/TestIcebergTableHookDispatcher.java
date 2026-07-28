@@ -138,6 +138,9 @@ public class TestIcebergTableHookDispatcher {
     // Mock request context
     mockContext = mock(IcebergRequestContext.class);
     when(mockContext.catalogName()).thenReturn(TEST_CATALOG);
+    // The prefix may be metalake-qualified; production code resolves the pair from it.
+    when(mockContext.metalakeName()).thenReturn(TEST_METALAKE);
+    when(mockContext.simpleCatalogName()).thenReturn(TEST_CATALOG);
     when(mockContext.userName()).thenReturn(TEST_USER);
   }
 

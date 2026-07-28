@@ -22,6 +22,7 @@ package org.apache.gravitino.listener.api.event;
 import java.util.Map;
 import javax.servlet.http.HttpServletRequest;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.gravitino.iceberg.service.IcebergAccessDelegation;
 import org.apache.gravitino.iceberg.service.IcebergRESTUtils;
 import org.apache.gravitino.utils.PrincipalUtils;
 
@@ -37,10 +38,12 @@ public class IcebergRequestContext {
   @Deprecated private final HttpServletRequest httpServletRequest;
 
   private final String catalogName;
+  private final String metalakeName;
+  private final String simpleCatalogName;
   private final String userName;
   private final String remoteHostName;
   private final Map<String, String> httpHeaders;
-  private final boolean requestCredentialVending;
+  private final IcebergAccessDelegation accessDelegation;
 
   /**
    * Constructs a new {@code IcebergRequestContext} instance.
@@ -49,7 +52,7 @@ public class IcebergRequestContext {
    * @param catalogName The name of the catalog to be accessed in the request.
    */
   public IcebergRequestContext(HttpServletRequest httpRequest, String catalogName) {
-    this(httpRequest, catalogName, false);
+    this(httpRequest, catalogName, IcebergAccessDelegation.none());
   }
 
   /**
@@ -57,16 +60,27 @@ public class IcebergRequestContext {
    *
    * @param httpRequest The HttpServletRequest object containing request details.
    * @param catalogName The name of the catalog to be accessed in the request.
-   * @param requestCredentialVending Whether the request is for credential vending.
+   * @param accessDelegation parsed access delegation header
    */
   public IcebergRequestContext(
-      HttpServletRequest httpRequest, String catalogName, boolean requestCredentialVending) {
+      HttpServletRequest httpRequest,
+      String catalogName,
+      IcebergAccessDelegation accessDelegation) {
     this.httpServletRequest = httpRequest;
     this.remoteHostName = resolveClientAddress(httpRequest);
     this.httpHeaders = IcebergRESTUtils.getHttpHeaders(httpRequest);
     this.catalogName = catalogName;
+    // catalogName is the raw Iceberg REST prefix, which may be metalake-qualified
+    // ("{metalake}.{catalog}"). Resolve the addressed pair once here so every consumer that builds
+    // a Gravitino NameIdentifier uses the request's metalake instead of the server-configured one.
+    // Building an identifier from (configured metalake, raw prefix) yields a doubled metalake such
+    // as "ml.ml.catalog" and fails catalog lookup, so prefer metalake()/simpleCatalogName().
+    IcebergRESTUtils.MetalakeCatalog metalakeCatalog =
+        IcebergRESTUtils.parseMetalakeCatalog(catalogName);
+    this.metalakeName = metalakeCatalog.metalake();
+    this.simpleCatalogName = metalakeCatalog.catalog();
     this.userName = PrincipalUtils.getCurrentUserName();
-    this.requestCredentialVending = requestCredentialVending;
+    this.accessDelegation = accessDelegation;
   }
 
   private static String resolveClientAddress(HttpServletRequest request) {
@@ -87,6 +101,27 @@ public class IcebergRequestContext {
    */
   public String catalogName() {
     return catalogName;
+  }
+
+  /**
+   * Returns the metalake addressed by this request, resolved from the Iceberg REST prefix. Falls
+   * back to the server-configured metalake when the prefix is not metalake-qualified.
+   *
+   * @return The metalake name.
+   */
+  public String metalakeName() {
+    return metalakeName;
+  }
+
+  /**
+   * Returns the catalog name without the metalake qualifier. Use this (with {@link
+   * #metalakeName()}) when building Gravitino identifiers; {@link #catalogName()} returns the raw
+   * prefix and is only appropriate for selecting the Iceberg catalog wrapper.
+   *
+   * @return The catalog name.
+   */
+  public String simpleCatalogName() {
+    return simpleCatalogName;
   }
 
   /**
@@ -117,6 +152,15 @@ public class IcebergRequestContext {
   }
 
   /**
+   * Returns parsed {@code X-Iceberg-Access-Delegation} capabilities requested by the client.
+   *
+   * @return access delegation mode
+   */
+  public IcebergAccessDelegation accessDelegation() {
+    return accessDelegation;
+  }
+
+  /**
    * Checks whether this request opted into asynchronous table purge.
    *
    * <p>Async purge is opt-in. Standard Iceberg clients send no header and keep synchronous purge
@@ -132,15 +176,6 @@ public class IcebergRequestContext {
       }
     }
     return false;
-  }
-
-  /**
-   * Checks if the request is for credential vending.
-   *
-   * @return true if the request is for credential vending, false otherwise.
-   */
-  public boolean requestCredentialVending() {
-    return requestCredentialVending;
   }
 
   /**

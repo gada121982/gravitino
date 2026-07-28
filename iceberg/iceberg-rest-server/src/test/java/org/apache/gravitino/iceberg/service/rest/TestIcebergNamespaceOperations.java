@@ -32,6 +32,7 @@ import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 import javax.ws.rs.core.Response.Status;
 import org.apache.gravitino.NameIdentifier;
+import org.apache.gravitino.catalog.lakehouse.iceberg.IcebergConstants;
 import org.apache.gravitino.credential.Credential;
 import org.apache.gravitino.iceberg.service.IcebergRESTUtils;
 import org.apache.gravitino.iceberg.service.extension.DummyCredentialProvider;
@@ -59,6 +60,7 @@ import org.apache.gravitino.listener.api.event.IcebergUpdateNamespaceFailureEven
 import org.apache.gravitino.listener.api.event.IcebergUpdateNamespacePreEvent;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.catalog.Namespace;
+import org.apache.iceberg.rest.RESTCatalogProperties;
 import org.apache.iceberg.rest.requests.CreateTableRequest;
 import org.apache.iceberg.rest.requests.ImmutableRegisterTableRequest;
 import org.apache.iceberg.rest.requests.RegisterTableRequest;
@@ -414,20 +416,21 @@ public class TestIcebergNamespaceOperations extends IcebergNamespaceTestBase {
   }
 
   @Test
-  void testRegisterTableRemoteSigningNotSupported() {
-    RegisterTableRequest request =
-        ImmutableRegisterTableRequest.builder()
-            .name("remote_signing_test")
-            .metadataLocation("mock")
-            .build();
+  void testRegisterTableWithRemoteSigning() {
+    verifyCreateNamespaceSucc(Namespace.of("register_remote_ns"));
+    String s3Location = "s3://dummy-bucket/register_remote_foo";
     Response response =
-        getNamespaceClientBuilder(
-                Optional.of(Namespace.of("register_remote_ns")),
-                Optional.of("register"),
-                Optional.empty())
-            .header(IcebergTableOperations.X_ICEBERG_ACCESS_DELEGATION, "remote-signing")
-            .post(Entity.entity(request, MediaType.APPLICATION_JSON_TYPE));
-    Assertions.assertEquals(406, response.getStatus());
+        doRegisterTableWithRemoteSigning(
+            "register_remote_foo", Namespace.of("register_remote_ns"), s3Location);
+    Assertions.assertEquals(Status.OK.getStatusCode(), response.getStatus());
+    LoadTableResponse loadTableResponse = response.readEntity(LoadTableResponse.class);
+    Assertions.assertEquals(
+        "true", loadTableResponse.config().get(IcebergConstants.ICEBERG_S3_REMOTE_SIGNING_ENABLED));
+    Assertions.assertTrue(
+        loadTableResponse
+            .config()
+            .get(RESTCatalogProperties.SIGNER_ENDPOINT)
+            .endsWith("/tables/register_remote_foo/sign"));
   }
 
   @Test

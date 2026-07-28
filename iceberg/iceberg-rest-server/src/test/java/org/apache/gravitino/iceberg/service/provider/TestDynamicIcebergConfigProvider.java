@@ -94,7 +94,7 @@ public class TestDynamicIcebergConfigProvider {
   private void setMockCatalogFetcher(
       DynamicIcebergConfigProvider provider, Map<String, Catalog> catalogMap) {
     DynamicIcebergConfigProvider.CatalogFetcher mockFetcher =
-        catalogName -> {
+        (metalake, catalogName) -> {
           Catalog catalog = catalogMap.get(catalogName);
           if (catalog == null) {
             throw new NoSuchCatalogException("Catalog not found: %s", catalogName);

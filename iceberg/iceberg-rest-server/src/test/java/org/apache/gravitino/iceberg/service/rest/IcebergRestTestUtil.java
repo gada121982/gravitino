@@ -151,19 +151,16 @@ public class IcebergRestTestUtil {
           new IcebergTableOperationExecutor(
               icebergCatalogWrapperManager, Optional.of(mock(IcebergCleanupManager.class)));
       IcebergTableEventDispatcher icebergTableEventDispatcher =
-          new IcebergTableEventDispatcher(
-              icebergTableOperationExecutor, eventBus, configProvider.getMetalakeName());
+          new IcebergTableEventDispatcher(icebergTableOperationExecutor, eventBus);
       IcebergViewOperationExecutor icebergViewOperationExecutor =
           new IcebergViewOperationExecutor(icebergCatalogWrapperManager);
       IcebergViewEventDispatcher icebergViewEventDispatcher =
-          new IcebergViewEventDispatcher(
-              icebergViewOperationExecutor, eventBus, configProvider.getMetalakeName());
+          new IcebergViewEventDispatcher(icebergViewOperationExecutor, eventBus);
       IcebergNamespaceOperationExecutor icebergNamespaceOperationExecutor =
           new IcebergNamespaceOperationExecutor(
               icebergCatalogWrapperManager, Optional.of(mock(IcebergCleanupManager.class)));
       IcebergNamespaceEventDispatcher icebergNamespaceEventDispatcher =
-          new IcebergNamespaceEventDispatcher(
-              icebergNamespaceOperationExecutor, eventBus, configProvider.getMetalakeName());
+          new IcebergNamespaceEventDispatcher(icebergNamespaceOperationExecutor, eventBus);
 
       IcebergMetricsManager icebergMetricsManager = new IcebergMetricsManager(new IcebergConfig());
       resourceConfig.register(

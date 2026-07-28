@@ -21,6 +21,7 @@ package org.apache.gravitino.iceberg.service;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Maps;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -29,7 +30,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
+import javax.annotation.Nullable;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.gravitino.credential.CredentialPrivilege;
 import org.apache.gravitino.credential.CredentialPropertyUtils;
 import org.apache.gravitino.iceberg.common.IcebergConfig;
@@ -64,12 +68,13 @@ import org.apache.iceberg.rest.ResourcePaths;
 import org.apache.iceberg.rest.auth.AuthManager;
 import org.apache.iceberg.rest.auth.AuthManagers;
 import org.apache.iceberg.rest.auth.AuthSession;
-import org.apache.iceberg.rest.credentials.Credential;
 import org.apache.iceberg.rest.requests.CreateTableRequest;
 import org.apache.iceberg.rest.requests.RegisterTableRequest;
+import org.apache.iceberg.rest.requests.RemoteSignRequest;
 import org.apache.iceberg.rest.requests.UpdateTableRequest;
 import org.apache.iceberg.rest.responses.LoadCredentialsResponse;
 import org.apache.iceberg.rest.responses.LoadTableResponse;
+import org.apache.iceberg.rest.responses.RemoteSignResponse;
 
 /**
  * A {@link CatalogWrapperForREST} for a federated Iceberg REST catalog (the underlying catalog is a
@@ -77,9 +82,10 @@ import org.apache.iceberg.rest.responses.LoadTableResponse;
  *
  * <p>Federation-specific behavior is expressed through polymorphic overrides instead of {@code
  * instanceof RESTCatalog} checks scattered across the base class. Table operations are routed to
- * federation-aware {@code *Internal} methods so client-facing FileIO and credential properties are
- * extracted from the remote catalog's {@code table.io()}. Credentials are vended by the remote
- * catalog, so this wrapper never injects Gravitino-generated credentials.
+ * federation-aware {@code *Internal} methods so client-facing FileIO properties are extracted from
+ * the remote catalog's {@code table.io()}. Vended credentials and remote-signing config are
+ * included only when requested via {@link IcebergAccessDelegation}; credentials are sourced from
+ * the remote catalog, not Gravitino-managed credential vending.
  *
  * <p>Portions of the table create and update handling are derived from Apache Iceberg's {@code
  * org.apache.iceberg.rest.CatalogHandlers}:
@@ -89,6 +95,20 @@ public class FederatedCatalogWrapper extends CatalogWrapperForREST {
 
   private static final String FORMAT_VERSION = "format-version";
   private static final Schema EMPTY_SCHEMA = new Schema();
+
+  // Header used to request remote-signing delegation from the upstream REST catalog.
+  private static final String ACCESS_DELEGATION_HEADER = "X-Iceberg-Access-Delegation";
+  private static final String REMOTE_SIGNING = "remote-signing";
+  // Client config key carrying the upstream catalog's advertised remote-sign endpoint.
+  private static final String S3_SIGNER_ENDPOINT = "s3.signer.endpoint";
+  // Reserved REST catalog property naming the path segment the remote catalog is addressed under
+  // (Lakekeeper puts the warehouse id here). ResourcePaths keeps its own copy private.
+  private static final String REST_PREFIX_PROPERTY = "prefix";
+
+  // Caches the upstream (remote catalog) signer endpoint per table. The endpoint embeds stable
+  // identifiers (e.g. Lakekeeper's warehouse-id + table-uuid), so it is resolved once per table
+  // and reused for every subsequent sign, avoiding an extra loadTable round-trip per S3 request.
+  private final Map<TableIdentifier, String> signerPathCache = new ConcurrentHashMap<>();
 
   /**
    * Creates a federated wrapper.
@@ -102,22 +122,193 @@ public class FederatedCatalogWrapper extends CatalogWrapperForREST {
 
   @Override
   public LoadTableResponse createTable(
-      Namespace namespace, CreateTableRequest request, boolean requestCredential) {
-    // The remote REST catalog vends its own credentials, so the requestCredential flag is not used
-    // here; FileIO-derived client config is extracted by createTableInternal.
-    return createTableInternal(namespace, request);
+      Namespace namespace, CreateTableRequest request, IcebergAccessDelegation accessDelegation) {
+    return createTableInternal(namespace, request, accessDelegation);
   }
 
   @Override
   public LoadTableResponse loadTable(
-      TableIdentifier identifier, boolean requestCredential, CredentialPrivilege privilege) {
-    return loadTableInternal(identifier);
+      TableIdentifier identifier,
+      IcebergAccessDelegation accessDelegation,
+      CredentialPrivilege privilege) {
+    // privilege is unused; the remote REST catalog vends its own credentials via FileIO.
+    return loadTableInternal(identifier, accessDelegation);
   }
 
   @Override
   public LoadTableResponse registerTable(
-      Namespace namespace, RegisterTableRequest request, boolean requestCredential) {
-    return registerTableInternal(namespace, request);
+      Namespace namespace, RegisterTableRequest request, IcebergAccessDelegation accessDelegation) {
+    return registerTableInternal(namespace, request, accessDelegation);
+  }
+
+  @Override
+  public RemoteSignResponse remoteSign(
+      TableIdentifier tableIdentifier, RemoteSignRequest request, CredentialPrivilege privilege) {
+    RESTCatalog restCatalog = (RESTCatalog) getCatalog();
+    Map<String, String> properties = Maps.newHashMap(restCatalog.properties());
+    // The remote catalog may advertise a non-spec signer endpoint (e.g. Lakekeeper uses
+    // v1/signer/{warehouse-id}/tabular-id/{table-uuid}/v1/aws/s3/sign). Proxy to the advertised
+    // path rather than the Iceberg-spec .../sign path, which the remote catalog may not serve.
+    String signPath = resolveUpstreamSignPath(restCatalog, tableIdentifier, properties);
+
+    AuthManager authManager = null;
+    RESTClient client = null;
+    AuthSession authSession = null;
+    try {
+      authManager = AuthManagers.loadAuthManager(restCatalog.name(), properties);
+      client =
+          HTTPClient.builder(properties)
+              .uri(properties.get(CatalogProperties.URI))
+              .withHeaders(RESTUtil.configHeaders(properties))
+              .build();
+      authSession = authManager.catalogSession(client, properties);
+      return client
+          .withAuthSession(authSession)
+          .post(
+              signPath,
+              request,
+              RemoteSignResponse.class,
+              Collections.emptyMap(),
+              ErrorHandlers.tableErrorHandler());
+    } finally {
+      if (authSession != null) {
+        try {
+          authSession.close();
+        } catch (Exception e) {
+          LOG.warn(
+              "Failed to close auth session when remote signing for table: {}", tableIdentifier, e);
+        }
+      }
+      if (client != null) {
+        try {
+          client.close();
+        } catch (Exception e) {
+          LOG.warn(
+              "Failed to close REST client when remote signing for table: {}", tableIdentifier, e);
+        }
+      }
+      if (authManager != null) {
+        try {
+          authManager.close();
+        } catch (Exception e) {
+          LOG.warn(
+              "Failed to close auth manager when remote signing for table: {}", tableIdentifier, e);
+        }
+      }
+    }
+  }
+
+  /**
+   * Resolves the sign path to proxy to on the remote REST catalog. Prefers the endpoint the remote
+   * catalog advertises via {@code s3.signer.endpoint} (cached per table); falls back to the
+   * Iceberg-spec {@code .../sign} path for spec-compliant remote catalogs that do not advertise a
+   * custom endpoint.
+   */
+  private String resolveUpstreamSignPath(
+      RESTCatalog restCatalog, TableIdentifier tableIdentifier, Map<String, String> properties) {
+    String cached = signerPathCache.get(tableIdentifier);
+    if (cached != null) {
+      return cached;
+    }
+
+    String advertised;
+    try {
+      advertised = fetchUpstreamSignerEndpoint(restCatalog, tableIdentifier, properties);
+    } catch (NoSuchTableException e) {
+      // A staged create (CTAS) registers the table upstream but leaves it uncommitted, and a
+      // remote catalog may refuse to load it while still being able to sign for it — Lakekeeper
+      // returns 404 for loadTable on a staged table, yet its signer resolves staged tables. Fall
+      // back to the prefix-scoped signer route, which identifies the table by the request location
+      // instead of by name. Deliberately not cached: once the create commits, the table-specific
+      // endpoint advertised by the remote catalog is the stricter choice.
+      String prefixScopedPath = prefixScopedSignPath(properties);
+      if (prefixScopedPath == null) {
+        throw e;
+      }
+      LOG.debug(
+          "Remote catalog cannot load table {} (likely a staged create); signing via the "
+              + "prefix-scoped route {}",
+          tableIdentifier,
+          prefixScopedPath);
+      return prefixScopedPath;
+    }
+
+    String resolved =
+        advertised != null
+            ? advertised
+            : ResourcePaths.forCatalogProperties(properties).remoteSign(tableIdentifier);
+    signerPathCache.put(tableIdentifier, resolved);
+    return resolved;
+  }
+
+  /**
+   * Builds the prefix-scoped S3 signer route, which signs by request location rather than by table
+   * identity and therefore also serves tables that are not committed yet. Returns {@code null} when
+   * the remote catalog does not use a prefix, in which case no such route exists.
+   */
+  @Nullable
+  @VisibleForTesting
+  static String prefixScopedSignPath(Map<String, String> properties) {
+    String prefix = properties.get(REST_PREFIX_PROPERTY);
+    if (StringUtils.isBlank(prefix)) {
+      return null;
+    }
+    return String.format("v1/%s/v1/aws/s3/sign", RESTUtil.encodeString(prefix));
+  }
+
+  /**
+   * Fetches the remote catalog's advertised {@code s3.signer.endpoint} for a table by loading it
+   * with remote-signing access delegation. Returns {@code null} when the remote catalog does not
+   * advertise a custom signer endpoint.
+   */
+  private static String fetchUpstreamSignerEndpoint(
+      RESTCatalog restCatalog, TableIdentifier identifier, Map<String, String> properties) {
+    String tablePath = ResourcePaths.forCatalogProperties(properties).table(identifier);
+    AuthManager authManager = null;
+    RESTClient client = null;
+    AuthSession authSession = null;
+    try {
+      authManager = AuthManagers.loadAuthManager(restCatalog.name(), properties);
+      client =
+          HTTPClient.builder(properties)
+              .uri(properties.get(CatalogProperties.URI))
+              .withHeaders(RESTUtil.configHeaders(properties))
+              .build();
+      authSession = authManager.catalogSession(client, properties);
+      LoadTableResponse response =
+          client
+              .withAuthSession(authSession)
+              .get(
+                  tablePath,
+                  LoadTableResponse.class,
+                  ImmutableMap.of(ACCESS_DELEGATION_HEADER, REMOTE_SIGNING),
+                  ErrorHandlers.tableErrorHandler());
+      return response.config() == null ? null : response.config().get(S3_SIGNER_ENDPOINT);
+    } finally {
+      if (authSession != null) {
+        try {
+          authSession.close();
+        } catch (Exception e) {
+          LOG.warn(
+              "Failed to close auth session when resolving signer endpoint: {}", identifier, e);
+        }
+      }
+      if (client != null) {
+        try {
+          client.close();
+        } catch (Exception e) {
+          LOG.warn("Failed to close REST client when resolving signer endpoint: {}", identifier, e);
+        }
+      }
+      if (authManager != null) {
+        try {
+          authManager.close();
+        } catch (Exception e) {
+          LOG.warn(
+              "Failed to close auth manager when resolving signer endpoint: {}", identifier, e);
+        }
+      }
+    }
   }
 
   @Override
@@ -211,13 +402,14 @@ public class FederatedCatalogWrapper extends CatalogWrapperForREST {
    * Federation-aware {@code createTable}: creates the table on the underlying (remote) catalog and
    * extracts client-facing FileIO/credential properties from {@code table.io()}.
    */
-  private LoadTableResponse createTableInternal(Namespace namespace, CreateTableRequest request) {
+  private LoadTableResponse createTableInternal(
+      Namespace namespace, CreateTableRequest request, IcebergAccessDelegation accessDelegation) {
     Catalog loadedCatalog = getCatalog();
 
     request.validate();
 
     if (request.stageCreate()) {
-      return stageTableCreateInternal(namespace, request);
+      return stageTableCreateInternal(namespace, request, accessDelegation);
     }
 
     TableIdentifier ident = TableIdentifier.of(namespace, request.name());
@@ -231,14 +423,14 @@ public class FederatedCatalogWrapper extends CatalogWrapperForREST {
             .create();
 
     if (table instanceof BaseTable) {
-      return buildLoadTableResponseFromFileIo(ident, (BaseTable) table);
+      return buildLoadTableResponseFromFileIo(ident, (BaseTable) table, accessDelegation);
     }
 
     throw new IllegalStateException("Cannot wrap catalog that does not produce BaseTable");
   }
 
   private LoadTableResponse stageTableCreateInternal(
-      Namespace namespace, CreateTableRequest request) {
+      Namespace namespace, CreateTableRequest request, IcebergAccessDelegation accessDelegation) {
     Catalog loadedCatalog = getCatalog();
     TableIdentifier ident = TableIdentifier.of(namespace, request.name());
     if (loadedCatalog.tableExists(ident)) {
@@ -257,55 +449,51 @@ public class FederatedCatalogWrapper extends CatalogWrapperForREST {
             .withSortOrder(request.writeOrder())
             .withProperties(properties);
 
-    Table table;
-    if (request.location() != null) {
-      table = tableBuilder.withLocation(request.location()).createTransaction().table();
-    } else {
-      table = tableBuilder.createTransaction().table();
-    }
+    Transaction transaction =
+        request.location() != null
+            ? tableBuilder.withLocation(request.location()).createTransaction()
+            : tableBuilder.createTransaction();
+    Table table = transaction.table();
 
     Map<String, String> tableProperties = retrieveFileIOProperties(table.io());
-    Map<String, String> filteredCredentialProperties =
-        CredentialPropertyUtils.filterCredentialProperties(tableProperties);
     config.putAll(
         MapUtils.getFilteredMap(
             tableProperties, key -> catalogPropertiesToClientKeys.contains(key)));
-    config.putAll(filteredCredentialProperties);
-    config.putAll(
-        IcebergRESTUtils.buildRefreshProps(
-            catalogCredentialManager.catalogName(), ident, filteredCredentialProperties));
 
-    List<Credential> credentials =
-        IcebergRESTUtils.buildStorageCreds(
-            catalogCredentialManager.catalogName(), ident, table.io());
-
+    // Return the metadata the remote catalog produced for the table it staged, so the client keeps
+    // that identity. Building fresh metadata here would mint a different table UUID, and the commit
+    // that finalizes the staged create would then try to assign it upstream — which the remote
+    // catalog rejects ("Cannot assign a new UUID") because its staged table already has one.
     TableMetadata metadata =
-        TableMetadata.newTableMetadata(
-            request.schema(),
-            request.spec() != null ? request.spec() : PartitionSpec.unpartitioned(),
-            request.writeOrder() != null ? request.writeOrder() : SortOrder.unsorted(),
-            table.location(),
-            properties);
+        transaction instanceof BaseTransaction
+            ? ((BaseTransaction) transaction).currentMetadata()
+            : TableMetadata.newTableMetadata(
+                request.schema(),
+                request.spec() != null ? request.spec() : PartitionSpec.unpartitioned(),
+                request.writeOrder() != null ? request.writeOrder() : SortOrder.unsorted(),
+                table.location(),
+                properties);
 
-    return LoadTableResponse.builder()
-        .withTableMetadata(metadata)
-        .addAllConfig(config)
-        .addAllCredentials(credentials)
-        .build();
+    LoadTableResponse response =
+        LoadTableResponse.builder().withTableMetadata(metadata).addAllConfig(config).build();
+    return applyAccessDelegationConfig(
+        ident, table.io(), response, tableProperties, accessDelegation);
   }
 
   /**
    * Federation-aware {@code registerTable}: registers the existing table metadata on the underlying
-   * (remote) catalog and extracts client-facing FileIO/credential properties from {@code
-   * table.io()}, mirroring {@link #loadTableInternal(TableIdentifier)}.
+   * (remote) catalog via {@link CatalogHandlers#registerTable} and extracts client-facing FileIO
+   * and credential properties from {@code table.io()}, mirroring {@link
+   * #loadTableInternal(TableIdentifier, IcebergAccessDelegation)}.
    */
   private LoadTableResponse registerTableInternal(
-      Namespace namespace, RegisterTableRequest request) {
+      Namespace namespace, RegisterTableRequest request, IcebergAccessDelegation accessDelegation) {
+    CatalogHandlers.registerTable(getCatalog(), namespace, request);
     TableIdentifier ident = TableIdentifier.of(namespace, request.name());
     Table table = getCatalog().registerTable(ident, request.metadataLocation());
 
     if (table instanceof BaseTable) {
-      return buildLoadTableResponseFromFileIo(ident, (BaseTable) table);
+      return buildLoadTableResponseFromFileIo(ident, (BaseTable) table, accessDelegation);
     }
 
     throw new IllegalStateException("Cannot wrap catalog that does not produce BaseTable");
@@ -316,6 +504,14 @@ public class FederatedCatalogWrapper extends CatalogWrapperForREST {
    * catalog, including the staged-create path used by federated table creation.
    */
   private LoadTableResponse tableUpdateInternal(TableIdentifier ident, UpdateTableRequest request) {
+    if (isCreate(request) && getCatalog() instanceof RESTCatalog) {
+      // Staged-create commit against a remote REST catalog. The remote catalog already holds the
+      // staged table from the create that opened this transaction, so forward the commit as-is and
+      // let it finalize the table. Rebuilding the commit as a fresh create (the branch below) would
+      // re-run create-time validation upstream, which fails once the staged write has produced data
+      // files: Lakekeeper requires the location of a table it creates to be empty.
+      return proxyTableUpdate(ident, request);
+    }
     if (isCreate(request)) {
       // this is a hacky way to get TableOperations for an uncommitted table
       Optional<Integer> formatVersion =
@@ -365,11 +561,12 @@ public class FederatedCatalogWrapper extends CatalogWrapperForREST {
    * Federation-aware {@code loadTable}: loads the table from the underlying (remote) catalog and
    * extracts client-facing FileIO/credential properties from {@code table.io()}.
    */
-  private LoadTableResponse loadTableInternal(TableIdentifier ident) {
+  private LoadTableResponse loadTableInternal(
+      TableIdentifier ident, IcebergAccessDelegation accessDelegation) {
     Table table = getCatalog().loadTable(ident);
 
     if (table instanceof BaseTable) {
-      return buildLoadTableResponseFromFileIo(ident, (BaseTable) table);
+      return buildLoadTableResponseFromFileIo(ident, (BaseTable) table, accessDelegation);
     } else if (table instanceof BaseMetadataTable) {
       // metadata tables are loaded on the client side, return NoSuchTableException for now
       throw new NoSuchTableException("Table does not exist: %s", ident.toString());
@@ -379,32 +576,121 @@ public class FederatedCatalogWrapper extends CatalogWrapperForREST {
   }
 
   /**
-   * Builds a {@link LoadTableResponse} from a remote {@link BaseTable}, exposing the client-facing
-   * FileIO and credential properties extracted from {@code table.io()}, including the refreshable
-   * vended credentials and refresh properties for the remote storage.
+   * Builds a {@link LoadTableResponse} from a remote {@link BaseTable}, exposing client-facing
+   * FileIO properties extracted from {@code table.io()}. Vended credentials and remote-signing
+   * config are appended only when requested by {@code accessDelegation}.
    *
    * @param ident the table identifier, used to build the credential-refresh endpoint.
    * @param table the remote base table whose {@code io()} carries the storage credentials.
-   * @return the load-table response including FileIO-derived client config and vended credentials.
+   * @param accessDelegation client-requested access delegation capabilities.
+   * @return the load-table response with opt-in vended credentials and remote-signing config.
    */
   private LoadTableResponse buildLoadTableResponseFromFileIo(
-      TableIdentifier ident, BaseTable table) {
+      TableIdentifier ident, BaseTable table, IcebergAccessDelegation accessDelegation) {
     Map<String, String> properties = retrieveFileIOProperties(table.io());
+    LoadTableResponse response =
+        LoadTableResponse.builder()
+            .withTableMetadata(table.operations().current())
+            .addAllConfig(
+                MapUtils.getFilteredMap(
+                    properties, key -> catalogPropertiesToClientKeys.contains(key)))
+            .build();
+    return applyAccessDelegationConfig(ident, table.io(), response, properties, accessDelegation);
+  }
+
+  private LoadTableResponse applyAccessDelegationConfig(
+      TableIdentifier ident,
+      FileIO fileIO,
+      LoadTableResponse response,
+      Map<String, String> fileIoProperties,
+      IcebergAccessDelegation accessDelegation) {
+    if (shouldGenerateCredential(response, accessDelegation)) {
+      response = injectRemoteCatalogCredentialConfig(ident, fileIO, fileIoProperties, response);
+    }
+    if (shouldGenerateRemoteSign(response, accessDelegation)) {
+      return injectRemoteSigningConfig(ident, response);
+    }
+    return response;
+  }
+
+  /**
+   * Injects vended credentials extracted from the remote catalog's {@link FileIO} into a load-table
+   * response.
+   */
+  private LoadTableResponse injectRemoteCatalogCredentialConfig(
+      TableIdentifier ident,
+      FileIO fileIO,
+      Map<String, String> fileIoProperties,
+      LoadTableResponse loadTableResponse) {
     Map<String, String> filteredCredentialProperties =
-        CredentialPropertyUtils.filterCredentialProperties(properties);
+        CredentialPropertyUtils.filterCredentialProperties(fileIoProperties);
     return LoadTableResponse.builder()
-        .withTableMetadata(table.operations().current())
-        .addAllConfig(
-            MapUtils.getFilteredMap(properties, key -> catalogPropertiesToClientKeys.contains(key)))
-        // Keep only credential fields from FileIO properties before returning them to the client.
+        .withTableMetadata(loadTableResponse.tableMetadata())
+        .addAllConfig(loadTableResponse.config())
         .addAllConfig(filteredCredentialProperties)
         .addAllConfig(
             IcebergRESTUtils.buildRefreshProps(
                 catalogCredentialManager.catalogName(), ident, filteredCredentialProperties))
         .addAllCredentials(
             IcebergRESTUtils.buildStorageCreds(
-                catalogCredentialManager.catalogName(), ident, table.io()))
+                catalogCredentialManager.catalogName(), ident, fileIO))
+        .addAllCredentials(loadTableResponse.credentials())
         .build();
+  }
+
+  /**
+   * Forwards a table commit to the remote REST catalog verbatim, so the remote catalog applies the
+   * requirements and updates itself. Used for the staged-create commit, which the remote catalog
+   * must resolve against the table it staged rather than treat as a new create.
+   */
+  private LoadTableResponse proxyTableUpdate(
+      TableIdentifier identifier, UpdateTableRequest request) {
+    RESTCatalog restCatalog = (RESTCatalog) getCatalog();
+    Map<String, String> properties = Maps.newHashMap(restCatalog.properties());
+    String tablePath = ResourcePaths.forCatalogProperties(properties).table(identifier);
+
+    AuthManager authManager = null;
+    RESTClient client = null;
+    AuthSession authSession = null;
+    try {
+      authManager = AuthManagers.loadAuthManager(restCatalog.name(), properties);
+      client =
+          HTTPClient.builder(properties)
+              .uri(properties.get(CatalogProperties.URI))
+              .withHeaders(RESTUtil.configHeaders(properties))
+              .build();
+      authSession = authManager.catalogSession(client, properties);
+      return client
+          .withAuthSession(authSession)
+          .post(
+              tablePath,
+              request,
+              LoadTableResponse.class,
+              Collections.emptyMap(),
+              ErrorHandlers.tableCommitHandler());
+    } finally {
+      if (authSession != null) {
+        try {
+          authSession.close();
+        } catch (Exception e) {
+          LOG.warn("Failed to close auth session when committing table: {}", identifier, e);
+        }
+      }
+      if (client != null) {
+        try {
+          client.close();
+        } catch (Exception e) {
+          LOG.warn("Failed to close REST client when committing table: {}", identifier, e);
+        }
+      }
+      if (authManager != null) {
+        try {
+          authManager.close();
+        } catch (Exception e) {
+          LOG.warn("Failed to close auth manager when committing table: {}", identifier, e);
+        }
+      }
+    }
   }
 
   private static boolean isCreate(UpdateTableRequest request) {

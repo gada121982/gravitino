@@ -100,6 +100,9 @@ public class TestIcebergViewHookDispatcher {
     mockContext = mock(IcebergRequestContext.class);
 
     when(mockContext.catalogName()).thenReturn(CATALOG);
+    // The prefix may be metalake-qualified; production code resolves the pair from it.
+    when(mockContext.metalakeName()).thenReturn(METALAKE);
+    when(mockContext.simpleCatalogName()).thenReturn(CATALOG);
     when(mockContext.userName()).thenReturn(USER);
 
     // Setup GravitinoEnv mock
@@ -129,7 +132,7 @@ public class TestIcebergViewHookDispatcher {
       throw new RuntimeException("Failed to setup test", e);
     }
 
-    hookDispatcher = new IcebergViewHookDispatcher(mockExecutor, mockNamespaceDispatcher, METALAKE);
+    hookDispatcher = new IcebergViewHookDispatcher(mockExecutor, mockNamespaceDispatcher);
   }
 
   @AfterEach

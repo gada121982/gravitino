@@ -20,8 +20,11 @@
 package org.apache.gravitino.iceberg.service.dispatcher;
 
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.gravitino.Entity;
 import org.apache.gravitino.NameIdentifier;
 import org.apache.gravitino.auth.AuthConstants;
@@ -29,8 +32,8 @@ import org.apache.gravitino.catalog.lakehouse.iceberg.IcebergConstants;
 import org.apache.gravitino.credential.CredentialPrivilege;
 import org.apache.gravitino.iceberg.common.ops.IcebergCatalogWrapper;
 import org.apache.gravitino.iceberg.common.utils.IcebergIdentifierUtils;
+import org.apache.gravitino.iceberg.service.IcebergAccessDelegation;
 import org.apache.gravitino.iceberg.service.IcebergCatalogWrapperManager;
-import org.apache.gravitino.iceberg.service.authorization.IcebergRESTServerContext;
 import org.apache.gravitino.iceberg.service.cleanup.IcebergCleanupJob;
 import org.apache.gravitino.iceberg.service.cleanup.IcebergCleanupManager;
 import org.apache.gravitino.listener.api.event.IcebergRequestContext;
@@ -42,18 +45,22 @@ import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.rest.requests.CreateTableRequest;
 import org.apache.iceberg.rest.requests.PlanTableScanRequest;
+import org.apache.iceberg.rest.requests.RemoteSignRequest;
 import org.apache.iceberg.rest.requests.RenameTableRequest;
 import org.apache.iceberg.rest.requests.UpdateTableRequest;
 import org.apache.iceberg.rest.responses.ListTablesResponse;
 import org.apache.iceberg.rest.responses.LoadCredentialsResponse;
 import org.apache.iceberg.rest.responses.LoadTableResponse;
 import org.apache.iceberg.rest.responses.PlanTableScanResponse;
+import org.apache.iceberg.rest.responses.RemoteSignResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class IcebergTableOperationExecutor implements IcebergTableOperationDispatcher {
 
   private static final Logger LOG = LoggerFactory.getLogger(IcebergTableOperationExecutor.class);
+
+  private static final Set<String> WRITE_HTTP_METHODS = Set.of("PUT", "POST", "DELETE", "PATCH");
 
   private final IcebergCatalogWrapperManager icebergCatalogWrapperManager;
   private final Optional<IcebergCleanupManager> cleanupManager;
@@ -69,7 +76,11 @@ public class IcebergTableOperationExecutor implements IcebergTableOperationDispa
   public LoadTableResponse createTable(
       IcebergRequestContext context, Namespace namespace, CreateTableRequest createTableRequest) {
     IcebergCleanupHelper.rejectIfBeingPurged(
-        cleanupManager, context.catalogName(), namespace, createTableRequest.name());
+        cleanupManager,
+        context.metalakeName(),
+        context.simpleCatalogName(),
+        namespace,
+        createTableRequest.name());
 
     String authenticatedUser = context.userName();
     if (!AuthConstants.ANONYMOUS_USER.equals(authenticatedUser)) {
@@ -105,7 +116,7 @@ public class IcebergTableOperationExecutor implements IcebergTableOperationDispa
 
     return icebergCatalogWrapperManager
         .getCatalogWrapper(context.catalogName())
-        .createTable(namespace, createTableRequest, context.requestCredentialVending());
+        .createTable(namespace, createTableRequest, context.accessDelegation());
   }
 
   @Override
@@ -147,7 +158,8 @@ public class IcebergTableOperationExecutor implements IcebergTableOperationDispa
           manager.addJob(
               new IcebergCleanupJob(
                   0L,
-                  IcebergCleanupHelper.catalogId(context.catalogName()),
+                  IcebergCleanupHelper.catalogId(
+                      context.metalakeName(), context.simpleCatalogName()),
                   tableIdentifier.namespace().toString(),
                   tableIdentifier.name(),
                   metadata.metadataFileLocation(),
@@ -161,14 +173,15 @@ public class IcebergTableOperationExecutor implements IcebergTableOperationDispa
   @Override
   public LoadTableResponse loadTable(
       IcebergRequestContext context, TableIdentifier tableIdentifier) {
-    CredentialPrivilege privilege = CredentialPrivilege.READ;
-    if (context.requestCredentialVending()) {
-      privilege = getCredentialPrivilege(context, tableIdentifier);
-    }
+    IcebergAccessDelegation accessDelegation = context.accessDelegation();
+    CredentialPrivilege privilege =
+        accessDelegation.requestVendedCredentials()
+            ? getCredentialPrivilege(context, tableIdentifier)
+            : CredentialPrivilege.READ; // unused unless vended credentials are injected
 
     return icebergCatalogWrapperManager
         .getCatalogWrapper(context.catalogName())
-        .loadTable(tableIdentifier, context.requestCredentialVending(), privilege);
+        .loadTable(tableIdentifier, accessDelegation, privilege);
   }
 
   @Override
@@ -201,13 +214,23 @@ public class IcebergTableOperationExecutor implements IcebergTableOperationDispa
         .getTableCredentials(tableIdentifier, privilege);
   }
 
+  @Override
+  public RemoteSignResponse remoteSign(
+      IcebergRequestContext context,
+      TableIdentifier tableIdentifier,
+      RemoteSignRequest remoteSignRequest) {
+    CredentialPrivilege privilege = getRemoteSignPrivilege(remoteSignRequest.method());
+    return icebergCatalogWrapperManager
+        .getCatalogWrapper(context.catalogName())
+        .remoteSign(tableIdentifier, remoteSignRequest, privilege);
+  }
+
   private static CredentialPrivilege getCredentialPrivilege(
       IcebergRequestContext context, TableIdentifier tableIdentifier) {
-    String metalake = IcebergRESTServerContext.getInstance().metalakeName();
     String separator = HierarchicalSchemaUtil.schemaSeparator();
     NameIdentifier identifier =
         IcebergIdentifierUtils.toGravitinoTableIdentifier(
-            metalake, context.catalogName(), tableIdentifier, separator);
+            context.metalakeName(), context.simpleCatalogName(), tableIdentifier, separator);
     boolean writable =
         MetadataAuthzHelper.checkAccess(
             identifier,
@@ -215,6 +238,13 @@ public class IcebergTableOperationExecutor implements IcebergTableOperationDispa
             AuthorizationExpressionConstants.FILTER_MODIFY_TABLE_AUTHORIZATION_EXPRESSION);
 
     return writable ? CredentialPrivilege.WRITE : CredentialPrivilege.READ;
+  }
+
+  private static CredentialPrivilege getRemoteSignPrivilege(String method) {
+    String normalizedMethod = StringUtils.trimToEmpty(method).toUpperCase(Locale.ROOT);
+    return WRITE_HTTP_METHODS.contains(normalizedMethod)
+        ? CredentialPrivilege.WRITE
+        : CredentialPrivilege.READ;
   }
 
   @Override

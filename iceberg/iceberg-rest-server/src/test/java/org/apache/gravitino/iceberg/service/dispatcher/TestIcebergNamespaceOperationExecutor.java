@@ -58,6 +58,9 @@ public class TestIcebergNamespaceOperationExecutor {
 
     mockContext = mock(IcebergRequestContext.class);
     when(mockContext.catalogName()).thenReturn("test_catalog");
+    // The prefix may be metalake-qualified; production code resolves the pair from it.
+    when(mockContext.metalakeName()).thenReturn("test_metalake");
+    when(mockContext.simpleCatalogName()).thenReturn("test_catalog");
     when(mockWrapperManager.getCatalogWrapper("test_catalog")).thenReturn(mockCatalogWrapper);
   }
 

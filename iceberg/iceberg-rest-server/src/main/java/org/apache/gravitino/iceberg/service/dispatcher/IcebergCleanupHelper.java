@@ -22,7 +22,6 @@ package org.apache.gravitino.iceberg.service.dispatcher;
 import java.util.Optional;
 import org.apache.gravitino.GravitinoEnv;
 import org.apache.gravitino.NameIdentifier;
-import org.apache.gravitino.iceberg.service.authorization.IcebergRESTServerContext;
 import org.apache.gravitino.iceberg.service.cleanup.IcebergCleanupManager;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
@@ -40,8 +39,7 @@ final class IcebergCleanupHelper {
    * Returns the catalog entity id for {@code catalogName}. The catalog is already loaded for the
    * current request, so this reads its in-memory entity without an extra entity-store lookup.
    */
-  static long catalogId(String catalogName) {
-    String metalake = IcebergRESTServerContext.getInstance().metalakeName();
+  static long catalogId(String metalake, String catalogName) {
     return GravitinoEnv.getInstance()
         .catalogManager()
         .loadCatalogAndWrap(NameIdentifier.of(metalake, catalogName))
@@ -58,6 +56,7 @@ final class IcebergCleanupHelper {
    */
   static void rejectIfBeingPurged(
       Optional<IcebergCleanupManager> cleanupManager,
+      String metalake,
       String catalogName,
       Namespace namespace,
       String tableName) {
@@ -66,7 +65,7 @@ final class IcebergCleanupHelper {
     }
     long catalogId;
     try {
-      catalogId = catalogId(catalogName);
+      catalogId = catalogId(metalake, catalogName);
     } catch (RuntimeException e) {
       LOG.warn("No catalog id for {}; skipping purge check", catalogName, e);
       return;
