@@ -58,6 +58,15 @@ public class GvfsSessionAwareOAuth2TokenProvider extends OAuth2TokenProvider {
   // means SQL and GVFS share one per-user credential on both sides of the driver/executor boundary.
   private static final String SESSION_CREDENTIAL_KEY = "spark.sql.gravitino.oauth2.credential";
 
+  /**
+   * Refresh a token this long before it actually expires.
+   *
+   * <p>Without a margin, a token with milliseconds left still passes the check and then dies in
+   * flight — the running job gets a 401 mid-query instead of quietly picking up a fresh token.
+   * Sixty seconds comfortably covers request latency and clock skew between the engine and IAM.
+   */
+  private static final long REFRESH_MARGIN_MS = 60_000L;
+
   private String sharedCredential;
   private String scope;
   private String path;
@@ -86,7 +95,7 @@ public class GvfsSessionAwareOAuth2TokenProvider extends OAuth2TokenProvider {
     String token = tokenCache.get(credential);
 
     Long expires = OAuth2ClientUtil.expiresAtMillis(token);
-    if (expires == null || expires <= System.currentTimeMillis()) {
+    if (expires == null || expires <= System.currentTimeMillis() + REFRESH_MARGIN_MS) {
       token =
           OAuth2ClientUtil.fetchToken(client, Collections.emptyMap(), credential, scope, path)
               .getAccessToken();
