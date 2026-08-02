@@ -49,6 +49,28 @@ public class AuthorizationExpressionConstants {
                   """;
 
   /**
+   * Write-intent expression for Iceberg REST remote signing.
+   *
+   * <p>The sign endpoint itself is gated by {@link #ICEBERG_LOAD_TABLE_AUTHORIZATION_EXPRESSION},
+   * which read privileges satisfy — appropriate for signing a GET, but not for signing a PUT or a
+   * DELETE. Signing a write grants the caller the ability to put bytes in the table's storage
+   * location, so it must require a write privilege in its own right; otherwise the only real check
+   * happens at commit, by which time the object is already in the bucket and removing it depends on
+   * the client choosing to clean up after itself.
+   *
+   * <p>{@code ANY_CREATE_TABLE} is included deliberately. During {@code CREATE TABLE AS SELECT} the
+   * table does not exist yet, so there is no {@code TABLE::OWNER} to match and the caller normally
+   * holds {@code create_table} rather than {@code modify_table}. Leaving it out would reject the
+   * staged-create path — the one that has already broken three times (ps2/ps3/ps4).
+   */
+  public static final String ICEBERG_REMOTE_SIGN_WRITE_AUTHORIZATION_EXPRESSION =
+      """
+                  ANY(OWNER, METALAKE, CATALOG) ||
+                  SCHEMA_OWNER_WITH_USE_CATALOG ||
+                  ANY_USE_CATALOG && ANY_USE_SCHEMA && (TABLE::OWNER || ANY_MODIFY_TABLE || ANY_CREATE_TABLE)
+                  """;
+
+  /**
    * Existence-check expression for Iceberg REST {@code loadTable}: used when the primary load-table
    * expression is forbidden, to allow schema-level principals who can create/select views to
    * resolve a table identifier (e.g. view backing table) without full table privileges.

@@ -43,6 +43,7 @@ import org.apache.gravitino.utils.HierarchicalSchemaUtil;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.exceptions.ForbiddenException;
 import org.apache.iceberg.rest.requests.CreateTableRequest;
 import org.apache.iceberg.rest.requests.PlanTableScanRequest;
 import org.apache.iceberg.rest.requests.RemoteSignRequest;
@@ -220,24 +221,61 @@ public class IcebergTableOperationExecutor implements IcebergTableOperationDispa
       TableIdentifier tableIdentifier,
       RemoteSignRequest remoteSignRequest) {
     CredentialPrivilege privilege = getRemoteSignPrivilege(remoteSignRequest.method());
+
+    // Signing a write must require a write privilege. The endpoint's own
+    // @AuthorizationExpression mirrors loadTable, so select_table alone satisfies it — fine for
+    // signing a GET, wrong for a PUT. Without this check the caller obtains a signed URL, writes
+    // the object, and is only stopped at commit, leaving the bytes in the bucket for the client to
+    // clean up voluntarily.
+    //
+    // This cannot live in the annotation: annotations are static, and the HTTP method being signed
+    // arrives in the request body.
+    if (CredentialPrivilege.WRITE.equals(privilege)) {
+      checkRemoteSignWriteAccess(context, tableIdentifier, remoteSignRequest.method());
+    }
+
     return icebergCatalogWrapperManager
         .getCatalogWrapper(context.catalogName())
         .remoteSign(tableIdentifier, remoteSignRequest, privilege);
   }
 
-  private static CredentialPrivilege getCredentialPrivilege(
-      IcebergRequestContext context, TableIdentifier tableIdentifier) {
-    String separator = HierarchicalSchemaUtil.schemaSeparator();
-    NameIdentifier identifier =
-        IcebergIdentifierUtils.toGravitinoTableIdentifier(
-            context.metalakeName(), context.simpleCatalogName(), tableIdentifier, separator);
-    boolean writable =
+  private static void checkRemoteSignWriteAccess(
+      IcebergRequestContext context, TableIdentifier tableIdentifier, String method) {
+    NameIdentifier identifier = toGravitinoIdentifier(context, tableIdentifier);
+    boolean allowed =
         MetadataAuthzHelper.checkAccess(
             identifier,
+            Entity.EntityType.TABLE,
+            AuthorizationExpressionConstants.ICEBERG_REMOTE_SIGN_WRITE_AUTHORIZATION_EXPRESSION);
+    if (!allowed) {
+      LOG.warn(
+          "Refusing to sign {} for Iceberg table {}: caller lacks write privilege",
+          method,
+          identifier);
+      throw new ForbiddenException(
+          "Not authorized to sign a %s request for table %s: write privilege required",
+          method, identifier);
+    }
+  }
+
+  private static CredentialPrivilege getCredentialPrivilege(
+      IcebergRequestContext context, TableIdentifier tableIdentifier) {
+    boolean writable =
+        MetadataAuthzHelper.checkAccess(
+            toGravitinoIdentifier(context, tableIdentifier),
             Entity.EntityType.TABLE,
             AuthorizationExpressionConstants.FILTER_MODIFY_TABLE_AUTHORIZATION_EXPRESSION);
 
     return writable ? CredentialPrivilege.WRITE : CredentialPrivilege.READ;
+  }
+
+  private static NameIdentifier toGravitinoIdentifier(
+      IcebergRequestContext context, TableIdentifier tableIdentifier) {
+    return IcebergIdentifierUtils.toGravitinoTableIdentifier(
+        context.metalakeName(),
+        context.simpleCatalogName(),
+        tableIdentifier,
+        HierarchicalSchemaUtil.schemaSeparator());
   }
 
   private static CredentialPrivilege getRemoteSignPrivilege(String method) {
