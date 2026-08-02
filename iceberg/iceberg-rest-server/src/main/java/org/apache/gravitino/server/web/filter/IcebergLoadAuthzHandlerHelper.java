@@ -40,9 +40,13 @@ import org.apache.gravitino.utils.PrincipalUtils;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.exceptions.ForbiddenException;
 import org.apache.iceberg.rest.RESTUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Shared helper for Iceberg load table/view authorization handlers. */
 final class IcebergLoadAuthzHandlerHelper {
+
+  private static final Logger LOG = LoggerFactory.getLogger(IcebergLoadAuthzHandlerHelper.class);
 
   private IcebergLoadAuthzHandlerHelper() {}
 
@@ -123,18 +127,40 @@ final class IcebergLoadAuthzHandlerHelper {
     AuthorizationRequestContext requestContext = new AuthorizationRequestContext();
     Optional<String> emptyEntityType = Optional.empty();
 
-    AuthorizationExpressionEvaluator primaryEvaluator =
-        new AuthorizationExpressionEvaluator(primaryExpression);
-    if (primaryEvaluator.evaluate(
-        nameIdentifierMap, emptyPathParams, requestContext, emptyEntityType)) {
-      return;
-    }
+    // An identifier that cannot be expressed as a metadata object is not something this
+    // catalog governs, so there is no privilege to evaluate against it. Spark's datasource
+    // shortcut — SELECT * FROM csv.`gvfs://…/part-00000-….csv` — resolves as a table whose
+    // name is a file path, and MetadataObjects.parse re-splits "catalog.schema.<name>" on
+    // dots, so any dot in the path yields more than three parts and throws. Left
+    // unhandled that surfaced as "Authorization failed due to system internal error" with
+    // HTTP 500, telling the user nothing and hiding a path problem behind an authz one.
+    //
+    // Report it as not-found instead. That is both accurate (no such table exists) and
+    // useful: Spark falls back to reading the path directly. Note this is reached only by
+    // principals the earlier authorization did not already clear — an owner short-circuits
+    // before here, which is why the failure looked intermittent and identity-specific.
+    try {
+      AuthorizationExpressionEvaluator primaryEvaluator =
+          new AuthorizationExpressionEvaluator(primaryExpression);
+      if (primaryEvaluator.evaluate(
+          nameIdentifierMap, emptyPathParams, requestContext, emptyEntityType)) {
+        return;
+      }
 
-    AuthorizationExpressionEvaluator allowExistenceEvaluator =
-        new AuthorizationExpressionEvaluator(allowCheckExistenceExpression);
-    if (allowExistenceEvaluator.evaluate(
-            nameIdentifierMap, emptyPathParams, requestContext, emptyEntityType)
-        && !exists.getAsBoolean()) {
+      AuthorizationExpressionEvaluator allowExistenceEvaluator =
+          new AuthorizationExpressionEvaluator(allowCheckExistenceExpression);
+      if (allowExistenceEvaluator.evaluate(
+              nameIdentifierMap, emptyPathParams, requestContext, emptyEntityType)
+          && !exists.getAsBoolean()) {
+        throw notFoundException.get();
+      }
+    } catch (IllegalArgumentException e) {
+      LOG.debug(
+          "Cannot authorize {} '{}': the identifier is not a valid metadata object, "
+              + "reporting it as not found",
+          entityType,
+          entityId,
+          e);
       throw notFoundException.get();
     }
 
