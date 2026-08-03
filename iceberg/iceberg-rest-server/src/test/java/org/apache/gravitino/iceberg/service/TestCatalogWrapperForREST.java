@@ -29,6 +29,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import com.google.common.collect.ImmutableMap;
 import com.sun.net.httpserver.HttpServer;
 import java.io.OutputStream;
@@ -37,6 +39,7 @@ import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -2526,6 +2529,67 @@ public class TestCatalogWrapperForREST {
               return "loaded";
             }));
     Assertions.assertEquals(1, attempts.get());
+  }
+
+  @Test
+  public void testSigningContextCacheServesRepeatedRequests() {
+    // One query signs once per file it touches, and every one of those needs the same three
+    // locations. Measured on dev: reading 30 data files issued 30 signatures and 30 identical
+    // metadata loads. The cache is what turns that into one load.
+    AtomicInteger loads = new AtomicInteger();
+    Cache<TableIdentifier, String> cache =
+        Caffeine.newBuilder().expireAfterWrite(Duration.ofSeconds(30)).maximumSize(10).build();
+    TableIdentifier id = TableIdentifier.of("ns", "table");
+
+    for (int i = 0; i < 30; i++) {
+      String context =
+          cache.get(
+              id,
+              key -> {
+                loads.incrementAndGet();
+                return "s3://bucket/ns/table";
+              });
+      Assertions.assertEquals("s3://bucket/ns/table", context);
+    }
+    Assertions.assertEquals(1, loads.get(), "30 signatures should share one metadata load");
+  }
+
+  @Test
+  public void testSigningContextCacheIsPerTable() {
+    // Distinct tables must not share an entry — a signature for one table's URI must never be
+    // validated against another table's locations.
+    AtomicInteger loads = new AtomicInteger();
+    Cache<TableIdentifier, String> cache = Caffeine.newBuilder().maximumSize(10).build();
+
+    for (TableIdentifier id :
+        List.of(TableIdentifier.of("ns", "a"), TableIdentifier.of("ns", "b"))) {
+      cache.get(
+          id,
+          key -> {
+            loads.incrementAndGet();
+            return "s3://bucket/" + key.name();
+          });
+    }
+    Assertions.assertEquals(2, loads.get());
+    Assertions.assertEquals("s3://bucket/a", cache.getIfPresent(TableIdentifier.of("ns", "a")));
+    Assertions.assertEquals("s3://bucket/b", cache.getIfPresent(TableIdentifier.of("ns", "b")));
+  }
+
+  @Test
+  public void testSigningContextCacheReloadsAfterInvalidation() {
+    // When a URI falls outside the cached prefixes, remoteSign invalidates and reloads once before
+    // refusing. This is the path that keeps a legitimate write working after a table gains a new
+    // write location, rather than failing until the entry expires.
+    AtomicInteger loads = new AtomicInteger();
+    Cache<TableIdentifier, String> cache = Caffeine.newBuilder().maximumSize(10).build();
+    TableIdentifier id = TableIdentifier.of("ns", "table");
+
+    cache.get(id, key -> "s3://bucket/old-" + loads.incrementAndGet());
+    cache.invalidate(id);
+    cache.get(id, key -> "s3://bucket/new-" + loads.incrementAndGet());
+
+    Assertions.assertEquals(2, loads.get(), "invalidation should force a fresh load");
+    Assertions.assertEquals("s3://bucket/new-2", cache.getIfPresent(id));
   }
 
   @Test
