@@ -34,6 +34,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Supplier;
 import java.util.stream.Stream;
 import javax.annotation.Nullable;
 import org.apache.commons.lang3.StringUtils;
@@ -603,10 +604,27 @@ public class CatalogWrapperForREST extends IcebergCatalogWrapper {
    * blip is a poor trade.
    */
   private LoadTableResponse loadTableForSigning(TableIdentifier tableIdentifier) {
+    return retryTransientFailures(
+        tableIdentifier.toString(), () -> super.loadTable(tableIdentifier));
+  }
+
+  /**
+   * Runs an operation, retrying only failures that a later attempt could plausibly survive.
+   *
+   * <p>Extracted from its caller so the retry behaviour is testable without standing up a catalog:
+   * {@code super.loadTable} cannot be stubbed from a subclass.
+   *
+   * @param description identifies the target in log messages
+   * @param operation the call to run; must be safe to repeat
+   * @param <T> operation result type
+   * @return the operation's result
+   */
+  @VisibleForTesting
+  static <T> T retryTransientFailures(String description, Supplier<T> operation) {
     RuntimeException lastFailure = null;
     for (int attempt = 1; attempt <= SIGN_LOAD_ATTEMPTS; attempt++) {
       try {
-        return super.loadTable(tableIdentifier);
+        return operation.get();
       } catch (ServiceUnavailableException | ServiceFailureException e) {
         lastFailure = e;
         if (attempt == SIGN_LOAD_ATTEMPTS) {
@@ -614,9 +632,9 @@ public class CatalogWrapperForREST extends IcebergCatalogWrapper {
         }
         long delayMs = SIGN_LOAD_RETRY_BASE_DELAY_MS * (1L << (attempt - 1));
         LOG.warn(
-            "Loading metadata to sign a request for table {} failed ({}), attempt {} of {}, "
+            "Loading metadata to sign a request for {} failed ({}), attempt {} of {}, "
                 + "retrying in {}ms",
-            tableIdentifier,
+            description,
             e.getClass().getSimpleName(),
             attempt,
             SIGN_LOAD_ATTEMPTS,
