@@ -59,6 +59,7 @@ import org.apache.iceberg.TableScan;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.ForbiddenException;
+import org.apache.iceberg.exceptions.ServiceFailureException;
 import org.apache.iceberg.exceptions.ServiceUnavailableException;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.rest.CatalogHandlers;
@@ -87,6 +88,22 @@ public class CatalogWrapperForREST extends IcebergCatalogWrapper {
 
   private static final String DATA_ACCESS_VENDED_CREDENTIALS = "vended-credentials";
   private static final String DATA_ACCESS_REMOTE_SIGNING = "remote-signing";
+
+  /**
+   * Attempts, including the first, for the metadata load that precedes signing a request.
+   *
+   * <p>Signing is per-file, so a single write fans out into one load per object: a CTAS producing
+   * 28 data files was measured issuing 44 signatures, each one a round trip to the backing catalog.
+   * With no retry anywhere on that path, one transient failure among those dozens aborted the whole
+   * job — even though loading metadata to sign a URL is safe to repeat.
+   *
+   * <p>Kept small on purpose. This guards against a blip, not against an outage; if the catalog is
+   * genuinely down the job should fail promptly rather than stretch the failure out.
+   */
+  private static final int SIGN_LOAD_ATTEMPTS = 3;
+
+  /** Base delay for the retry above; doubles per attempt (100ms, 200ms). */
+  private static final long SIGN_LOAD_RETRY_BASE_DELAY_MS = 100L;
 
   /**
    * Client-facing catalog property keys retained when building the IRC {@code /v1/config} defaults
@@ -440,7 +457,7 @@ public class CatalogWrapperForREST extends IcebergCatalogWrapper {
    */
   public RemoteSignResponse remoteSign(
       TableIdentifier tableIdentifier, RemoteSignRequest request, CredentialPrivilege privilege) {
-    LoadTableResponse loadTableResponse = super.loadTable(tableIdentifier);
+    LoadTableResponse loadTableResponse = loadTableForSigning(tableIdentifier);
     TableMetadata tableMetadata = loadTableResponse.tableMetadata();
     validateCredentialLocation(tableMetadata.location());
     if (isLocalOrHdfsTable(tableMetadata)) {
@@ -455,6 +472,46 @@ public class CatalogWrapperForREST extends IcebergCatalogWrapper {
 
     Credential credential = getCredential(tableMetadata, privilege);
     return remoteSignSupport().sign(request, credential);
+  }
+
+  /**
+   * Loads table metadata for a signing request, retrying transient backend failures.
+   *
+   * <p>Only retries what is worth retrying. A refusal or a missing table will not change on a
+   * second attempt, and retrying those would turn a clear error into a delayed one, so they
+   * propagate immediately. Availability failures are different: the same call a moment later
+   * usually succeeds, and losing an entire write because one of dozens of signature requests hit a
+   * blip is a poor trade.
+   */
+  private LoadTableResponse loadTableForSigning(TableIdentifier tableIdentifier) {
+    RuntimeException lastFailure = null;
+    for (int attempt = 1; attempt <= SIGN_LOAD_ATTEMPTS; attempt++) {
+      try {
+        return super.loadTable(tableIdentifier);
+      } catch (ServiceUnavailableException | ServiceFailureException e) {
+        lastFailure = e;
+        if (attempt == SIGN_LOAD_ATTEMPTS) {
+          break;
+        }
+        long delayMs = SIGN_LOAD_RETRY_BASE_DELAY_MS * (1L << (attempt - 1));
+        LOG.warn(
+            "Loading metadata to sign a request for table {} failed ({}), attempt {} of {}, "
+                + "retrying in {}ms",
+            tableIdentifier,
+            e.getClass().getSimpleName(),
+            attempt,
+            SIGN_LOAD_ATTEMPTS,
+            delayMs,
+            e);
+        try {
+          Thread.sleep(delayMs);
+        } catch (InterruptedException interrupted) {
+          Thread.currentThread().interrupt();
+          throw e;
+        }
+      }
+    }
+    throw lastFailure;
   }
 
   private RemoteSignSupport remoteSignSupport() {
