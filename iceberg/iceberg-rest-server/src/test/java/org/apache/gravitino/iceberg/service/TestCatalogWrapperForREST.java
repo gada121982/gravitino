@@ -43,6 +43,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.gravitino.catalog.lakehouse.iceberg.IcebergConstants;
 import org.apache.gravitino.credential.CredentialConstants;
@@ -67,10 +68,12 @@ import org.apache.iceberg.catalog.Catalog;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.SupportsNamespaces;
 import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.exceptions.BadRequestException;
 import org.apache.iceberg.exceptions.ForbiddenException;
 import org.apache.iceberg.exceptions.NoSuchTableException;
 import org.apache.iceberg.exceptions.NotAuthorizedException;
 import org.apache.iceberg.exceptions.ServiceFailureException;
+import org.apache.iceberg.exceptions.ServiceUnavailableException;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.ResolvingFileIO;
 import org.apache.iceberg.io.StorageCredential;
@@ -1169,6 +1172,83 @@ public class TestCatalogWrapperForREST {
             "test-access-key",
             S3Properties.GRAVITINO_S3_SECRET_ACCESS_KEY,
             "test-secret-key"));
+  }
+
+  @Test
+  public void testRetryTransientFailuresSucceedsAfterTransientErrors() {
+    // Two availability failures then success: the write should survive, since loading metadata in
+    // order to sign a URL is safe to repeat. Before this retry existed, one blip among the dozens
+    // of signatures a single write needs took the whole job with it.
+    AtomicInteger attempts = new AtomicInteger();
+    String result =
+        CatalogWrapperForREST.retryTransientFailures(
+            "ns.table",
+            () -> {
+              if (attempts.incrementAndGet() < 3) {
+                throw new ServiceUnavailableException("backend briefly unavailable");
+              }
+              return "loaded";
+            });
+
+    Assertions.assertEquals("loaded", result);
+    Assertions.assertEquals(3, attempts.get());
+  }
+
+  @Test
+  public void testRetryTransientFailuresGivesUpAfterLimit() {
+    // Persistent failure must surface rather than being retried indefinitely: if the catalog is
+    // genuinely down, failing promptly beats stretching the failure out.
+    AtomicInteger attempts = new AtomicInteger();
+    Assertions.assertThrows(
+        ServiceUnavailableException.class,
+        () ->
+            CatalogWrapperForREST.retryTransientFailures(
+                "ns.table",
+                () -> {
+                  attempts.incrementAndGet();
+                  throw new ServiceUnavailableException("still down");
+                }));
+
+    Assertions.assertEquals(3, attempts.get());
+  }
+
+  @Test
+  public void testRetryTransientFailuresDoesNotRetryPermanentErrors() {
+    // A refusal will not change on a second attempt. Retrying it would only convert a clear error
+    // into a delayed one, so these propagate on the first try.
+    for (RuntimeException permanent :
+        List.of(
+            new ForbiddenException("not authorized"),
+            new NoSuchTableException("no such table"),
+            new BadRequestException("malformed"))) {
+      AtomicInteger attempts = new AtomicInteger();
+      Assertions.assertThrows(
+          permanent.getClass(),
+          () ->
+              CatalogWrapperForREST.retryTransientFailures(
+                  "ns.table",
+                  () -> {
+                    attempts.incrementAndGet();
+                    throw permanent;
+                  }));
+      Assertions.assertEquals(
+          1, attempts.get(), permanent.getClass().getSimpleName() + " should not be retried");
+    }
+  }
+
+  @Test
+  public void testRetryTransientFailuresSucceedsOnFirstAttempt() {
+    // The common case must not pay for the retry: no sleep, no extra call.
+    AtomicInteger attempts = new AtomicInteger();
+    Assertions.assertEquals(
+        "loaded",
+        CatalogWrapperForREST.retryTransientFailures(
+            "ns.table",
+            () -> {
+              attempts.incrementAndGet();
+              return "loaded";
+            }));
+    Assertions.assertEquals(1, attempts.get());
   }
 
   private static class StaticCatalogWrapperForREST extends FederatedCatalogWrapper {
