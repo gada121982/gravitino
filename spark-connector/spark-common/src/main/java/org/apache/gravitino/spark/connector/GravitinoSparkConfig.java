@@ -30,6 +30,9 @@ public class GravitinoSparkConfig {
       GRAVITINO_PREFIX + "enableIcebergSupport";
   public static final String GRAVITINO_ENABLE_PAIMON_SUPPORT =
       GRAVITINO_PREFIX + "enablePaimonSupport";
+  public static final String GRAVITINO_ICEBERG_REST_URI = GRAVITINO_PREFIX + "iceberg.rest.uri";
+  public static final String GRAVITINO_ICEBERG_REST_EAGER_REGISTER =
+      GRAVITINO_PREFIX + "iceberg.rest.eagerRegister";
   public static final String GRAVITINO_CLIENT_CONFIG_PREFIX = GRAVITINO_PREFIX + "client.";
 
   public static final String GRAVITINO_AUTH_TYPE =
