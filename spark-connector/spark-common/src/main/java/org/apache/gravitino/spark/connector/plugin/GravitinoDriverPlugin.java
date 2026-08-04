@@ -35,6 +35,7 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -87,6 +88,12 @@ public class GravitinoDriverPlugin implements DriverPlugin {
   static final String ICEBERG_SPARK_EXTENSIONS =
       "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions";
 
+  private static final String SPARK_CATALOG_PREFIX = "spark.sql.catalog.";
+  private static final String ICEBERG_REST_CATALOG_CLASS = "org.apache.iceberg.spark.SparkCatalog";
+  private static final String ICEBERG_ACCESS_DELEGATION_HEADER =
+      "header.X-Iceberg-Access-Delegation";
+  private static final String ICEBERG_REMOTE_SIGNING = "remote-signing";
+
   private final SparkBindings bindings;
   private final List<String> gravitinoIcebergExtensions =
       Arrays.asList(
@@ -97,6 +104,9 @@ public class GravitinoDriverPlugin implements DriverPlugin {
   private GravitinoCatalogManager catalogManager;
   private boolean enableIcebergSupport = false;
   private boolean enablePaimonSupport = false;
+  private boolean icebergRestEagerRegister = false;
+  private String icebergRestUri = "";
+  private String metalakeName = "";
 
   /**
    * Creates the plugin from the classes a connector build supplies.
@@ -125,6 +135,23 @@ public class GravitinoDriverPlugin implements DriverPlugin {
             "%s:%s, should not be empty", GravitinoSparkConfig.GRAVITINO_METALAKE, metalake));
 
     registerOptInExtensions(conf);
+
+    // Iceberg catalogs can be registered as plain Iceberg REST catalogs pointed at Gravitino's
+    // Iceberg REST service instead of going through this connector. Registering them here — while
+    // the driver is still building its SparkContext — keeps every access path working, including
+    // the DataFrame ones that never reach a SQL parser. Only enable this where the OAuth2
+    // credential already in SparkConf belongs to the identity the job runs as; a shared engine
+    // serving several users must keep resolving credentials per session instead.
+    this.metalakeName = metalake;
+    this.icebergRestUri = conf.get(GravitinoSparkConfig.GRAVITINO_ICEBERG_REST_URI, "").trim();
+    this.icebergRestEagerRegister =
+        conf.getBoolean(GravitinoSparkConfig.GRAVITINO_ICEBERG_REST_EAGER_REGISTER, false)
+            && StringUtils.isNotBlank(icebergRestUri);
+    if (icebergRestEagerRegister) {
+      // The Iceberg SQL extensions are still required for Iceberg DDL and stored procedures;
+      // the Gravitino-specific ones are not, since the catalog no longer uses the connector.
+      gravitinoDriverExtensions.add(ICEBERG_SPARK_EXTENSIONS);
+    }
 
     this.catalogManager =
         GravitinoCatalogManager.create(
@@ -167,7 +194,9 @@ public class GravitinoDriverPlugin implements DriverPlugin {
                     "Skip registering {} because {} is not supported yet.", catalogName, provider);
                 return;
               }
-              if (SparkCatalogKind.LAKEHOUSE_ICEBERG.equals(kind) && !enableIcebergSupport) {
+              if (SparkCatalogKind.LAKEHOUSE_ICEBERG.equals(kind)
+                  && !icebergRestEagerRegister
+                  && !enableIcebergSupport) {
                 return;
               }
               if (SparkCatalogKind.LAKEHOUSE_PAIMON.equals(kind) && !enablePaimonSupport) {
@@ -181,7 +210,11 @@ public class GravitinoDriverPlugin implements DriverPlugin {
                 return;
               }
               try {
-                registerCatalog(sparkConf, catalogName, kind);
+                if (SparkCatalogKind.LAKEHOUSE_ICEBERG.equals(kind) && icebergRestEagerRegister) {
+                  registerIcebergRestCatalog(sparkConf, catalogName);
+                } else {
+                  registerCatalog(sparkConf, catalogName, kind);
+                }
               } catch (Exception e) {
                 LOG.warn("Register catalog {} failed.", catalogName, e);
               }
@@ -206,7 +239,7 @@ public class GravitinoDriverPlugin implements DriverPlugin {
       return;
     }
 
-    String sparkCatalogConfigName = "spark.sql.catalog." + catalogName;
+    String sparkCatalogConfigName = SPARK_CATALOG_PREFIX + catalogName;
     Preconditions.checkArgument(
         !sparkConf.contains(sparkCatalogConfigName),
         catalogName + " is already registered to SparkCatalogManager");
@@ -263,6 +296,62 @@ public class GravitinoDriverPlugin implements DriverPlugin {
       return;
     }
     gravitinoDriverExtensions.addAll(gravitinoPaimonExtensions);
+  }
+
+  private void registerIcebergRestCatalog(SparkConf sparkConf, String catalogName) {
+    String sparkCatalogConfigName = SPARK_CATALOG_PREFIX + catalogName;
+    Preconditions.checkArgument(
+        !sparkConf.contains(sparkCatalogConfigName),
+        catalogName + " is already registered to SparkCatalogManager");
+    icebergRestCatalogConf(
+            catalogName,
+            metalakeName,
+            icebergRestUri,
+            sparkConf.get(GravitinoSparkConfig.GRAVITINO_OAUTH2_CREDENTIAL, ""),
+            sparkConf.get(GravitinoSparkConfig.GRAVITINO_OAUTH2_URI, ""),
+            sparkConf.get(GravitinoSparkConfig.GRAVITINO_OAUTH2_PATH, ""),
+            sparkConf.get(GravitinoSparkConfig.GRAVITINO_OAUTH2_SCOPE, ""))
+        .forEach(sparkConf::set);
+    LOG.info(
+        "Register {} catalog to Spark catalog manager as an Iceberg REST catalog.", catalogName);
+  }
+
+  /**
+   * Builds the Spark conf entries that make {@code catalogName} an Iceberg REST catalog served by
+   * Gravitino. The warehouse is metalake-qualified so a single REST endpoint can address catalogs
+   * across metalakes, and access is delegated back to the server so the engine signs storage
+   * requests through Gravitino rather than holding storage credentials itself.
+   */
+  @VisibleForTesting
+  static Map<String, String> icebergRestCatalogConf(
+      String catalogName,
+      String metalake,
+      String restUri,
+      String credential,
+      String oauth2ServerUri,
+      String oauth2TokenPath,
+      String oauth2Scope) {
+    String prefix = SPARK_CATALOG_PREFIX + catalogName;
+    Map<String, String> catalogConf = new LinkedHashMap<>();
+    catalogConf.put(prefix, ICEBERG_REST_CATALOG_CLASS);
+    catalogConf.put(prefix + ".type", "rest");
+    catalogConf.put(prefix + ".uri", restUri);
+    catalogConf.put(prefix + ".warehouse", metalake + "." + catalogName);
+    catalogConf.put(prefix + "." + ICEBERG_ACCESS_DELEGATION_HEADER, ICEBERG_REMOTE_SIGNING);
+    if (StringUtils.isNotBlank(credential)) {
+      catalogConf.put(prefix + ".credential", credential);
+    }
+    if (StringUtils.isNotBlank(oauth2ServerUri)) {
+      catalogConf.put(
+          prefix + ".oauth2-server-uri",
+          StringUtils.stripEnd(oauth2ServerUri, "/")
+              + "/"
+              + StringUtils.stripStart(oauth2TokenPath, "/"));
+    }
+    if (StringUtils.isNotBlank(oauth2Scope)) {
+      catalogConf.put(prefix + ".scope", oauth2Scope);
+    }
+    return catalogConf;
   }
 
   @VisibleForTesting
