@@ -177,7 +177,12 @@ public class IcebergMetadataAuthorizationMethodInterceptor
 
     IcebergCatalogWrapper catalogWrapper;
     try {
-      catalogWrapper = wrapperManager.getCatalogWrapper(catalogId.name());
+      // Qualify with the metalake the request addressed; the bare name would resolve against the
+      // server's fallback metalake and silently report "not a REST catalog" for every other one.
+      String metalake = catalogId.namespace().length() > 0 ? catalogId.namespace().level(0) : null;
+      catalogWrapper =
+          wrapperManager.getCatalogWrapper(
+              IcebergRESTUtils.qualifiedCatalogPrefix(metalake, catalogId.name()));
     } catch (NoSuchCatalogException e) {
       return false;
     }

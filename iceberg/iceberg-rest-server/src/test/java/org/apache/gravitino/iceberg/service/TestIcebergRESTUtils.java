@@ -89,6 +89,31 @@ public class TestIcebergRESTUtils {
   }
 
   @Test
+  void testQualifiedCatalogPrefixRoundTrips() {
+    String prefix = IcebergRESTUtils.qualifiedCatalogPrefix("lake2", "sales");
+    Assertions.assertEquals("lake2.sales", prefix);
+
+    IcebergRESTUtils.MetalakeCatalog parsed = IcebergRESTUtils.parseMetalakeCatalog(prefix);
+    Assertions.assertEquals("lake2", parsed.metalake());
+    Assertions.assertEquals("sales", parsed.catalog());
+  }
+
+  @Test
+  void testQualifiedCatalogPrefixKeepsBareNameWhenMetalakeUnknown() {
+    Assertions.assertEquals("sales", IcebergRESTUtils.qualifiedCatalogPrefix(null, "sales"));
+    Assertions.assertEquals("sales", IcebergRESTUtils.qualifiedCatalogPrefix("", "sales"));
+  }
+
+  @Test
+  void testBareCatalogNameFallsBackToConfiguredMetalake() {
+    // The trap this qualification exists to avoid: an unqualified name silently resolves
+    // against the server's configured metalake, not the one the request addressed.
+    IcebergRESTUtils.MetalakeCatalog parsed = IcebergRESTUtils.parseMetalakeCatalog("sales");
+    Assertions.assertEquals("metalake", parsed.metalake());
+    Assertions.assertEquals("sales", parsed.catalog());
+  }
+
+  @Test
   void testSerdeIcebergRESTObject() {
     Schema tableSchema =
         new Schema(

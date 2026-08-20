@@ -389,6 +389,24 @@ public class IcebergRESTUtils {
    */
   public static final char METALAKE_CATALOG_DELIMITER = '.';
 
+  /**
+   * Joins {@code metalake} and {@code catalog} into the multi-metalake prefix form understood by
+   * {@link #parseMetalakeCatalog(String)}. Any caller holding both parts must qualify the name
+   * through this method: passing the bare catalog name makes the lookup fall back to the metalake
+   * configured in {@code gravitino.iceberg-rest.gravitino-metalake}, which resolves the wrong
+   * catalog — or none at all — once a single endpoint serves more than one metalake.
+   *
+   * @param metalake metalake owning the catalog, may be blank when unknown
+   * @param catalog catalog name, without a metalake qualifier
+   * @return the qualified prefix, or {@code catalog} alone when {@code metalake} is blank
+   */
+  public static String qualifiedCatalogPrefix(String metalake, String catalog) {
+    if (StringUtils.isBlank(metalake)) {
+      return catalog;
+    }
+    return metalake + METALAKE_CATALOG_DELIMITER + catalog;
+  }
+
   /** Parsed {@code (metalake, catalog)} pair from an Iceberg REST prefix. */
   public static final class MetalakeCatalog {
     private final String metalake;

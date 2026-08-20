@@ -88,10 +88,19 @@ final class IcebergLoadAuthzHandlerHelper {
     return new LoadContext(catalogId.namespace().level(0), catalogId.name(), schemaId.name());
   }
 
-  static IcebergCatalogWrapper getCatalogWrapper(String catalog) {
+  /**
+   * Resolves the catalog wrapper for a load request. The wrapper is keyed by the raw Iceberg REST
+   * prefix, so the metalake must be carried along — {@code catalog} on its own would resolve
+   * against the server's fallback metalake instead of the one the request addressed.
+   */
+  static IcebergCatalogWrapper getCatalogWrapper(String metalake, String catalog) {
+    return getCatalogWrapper(IcebergRESTUtils.qualifiedCatalogPrefix(metalake, catalog));
+  }
+
+  static IcebergCatalogWrapper getCatalogWrapper(String catalogPrefix) {
     return IcebergRESTServerContext.getInstance()
         .catalogWrapperManager()
-        .getCatalogWrapper(catalog);
+        .getCatalogWrapper(catalogPrefix);
   }
 
   static String resolveExpression(
