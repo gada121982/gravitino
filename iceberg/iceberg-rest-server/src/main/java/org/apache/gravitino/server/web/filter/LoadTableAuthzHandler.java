@@ -88,13 +88,13 @@ public class LoadTableAuthzHandler implements AuthorizationHandler {
     // 1. Authorize the table access (see performTableAuthorization) -> 403 if unauthorized
     // 2. Let request proceed - the actual loadTable() call will handle non-existence
     IcebergCatalogWrapper catalogWrapper =
-        IcebergLoadAuthzHandlerHelper.getCatalogWrapper(loadContext.catalog(), nameIdentifierMap);
+        IcebergLoadAuthzHandlerHelper.getCatalogWrapper(
+            loadContext.metalakeName(), loadContext.catalog(), nameIdentifierMap);
 
     // Validate that this is not a metadata table access
     if (isMetadataTable(tableName, namespace, catalogWrapper)) {
       throw new NoSuchTableException("Table %s not found", tableName);
     }
-
     TableIdentifier tableIdentifier = TableIdentifier.of(namespace, tableName);
 
     NameIdentifier tableId =

@@ -92,12 +92,17 @@ final class IcebergLoadAuthzHandlerHelper {
     return new LoadContext(catalogId.namespace().level(0), catalogId.name(), schemaId.name());
   }
 
+  /**
+   * Resolves the catalog wrapper for a load request. The wrapper is keyed by the raw Iceberg REST
+   * prefix, so the metalake must be carried along — {@code catalog} on its own would resolve
+   * against the server's fallback metalake instead of the one the request addressed.
+   */
   static IcebergCatalogWrapper getCatalogWrapper(
-      String catalog, Map<EntityType, NameIdentifier> nameIdentifierMap) {
+      String metalake, String catalog, Map<EntityType, NameIdentifier> nameIdentifierMap) {
     try {
       return IcebergRESTServerContext.getInstance()
           .catalogWrapperManager()
-          .getCatalogWrapper(catalog);
+          .getCatalogWrapper(IcebergRESTUtils.qualifiedCatalogPrefix(metalake, catalog));
     } catch (NoSuchCatalogException | IllegalArgumentException e) {
       // A load handler resolves the backend before evaluating table/view privileges. Do not
       // disclose catalog existence or its provider to a caller who cannot see the catalog.
