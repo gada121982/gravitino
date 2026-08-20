@@ -85,6 +85,9 @@ public class TestIcebergMetadataAuthorizationMethodInterceptor {
   private static final String TEST_METALAKE = "test_metalake";
   private static final String TEST_CATALOG = "test_catalog";
   private static final String TEST_SCHEMA = "test_schema";
+  // Wrappers are keyed by the raw Iceberg REST prefix, so a lookup for a catalog reached through
+  // a metalake-qualified prefix must use "{metalake}.{catalog}", never the bare catalog name.
+  private static final String TEST_CATALOG_PREFIX = TEST_METALAKE + "." + TEST_CATALOG;
 
   @BeforeAll
   public void init() {
@@ -338,7 +341,7 @@ public class TestIcebergMetadataAuthorizationMethodInterceptor {
     IcebergCatalogWrapperManager wrapperManager = Mockito.mock(IcebergCatalogWrapperManager.class);
     CatalogWrapperForREST wrapper = Mockito.mock(CatalogWrapperForREST.class);
     RESTCatalog restCatalog = Mockito.mock(RESTCatalog.class);
-    Mockito.when(wrapperManager.getCatalogWrapper(TEST_CATALOG)).thenReturn(wrapper);
+    Mockito.when(wrapperManager.getCatalogWrapper(TEST_CATALOG_PREFIX)).thenReturn(wrapper);
     Mockito.when(wrapper.getCatalog()).thenReturn(restCatalog);
     Mockito.when(wrapper.forwardsUserToken()).thenReturn(true);
     resetContext(wrapperManager, true);
@@ -489,7 +492,7 @@ public class TestIcebergMetadataAuthorizationMethodInterceptor {
     IcebergCatalogWrapperManager wrapperManager = Mockito.mock(IcebergCatalogWrapperManager.class);
     CatalogWrapperForREST wrapper = Mockito.mock(CatalogWrapperForREST.class);
     Catalog nonRestCatalog = Mockito.mock(Catalog.class);
-    Mockito.when(wrapperManager.getCatalogWrapper(TEST_CATALOG)).thenReturn(wrapper);
+    Mockito.when(wrapperManager.getCatalogWrapper(TEST_CATALOG_PREFIX)).thenReturn(wrapper);
     Mockito.when(wrapper.getCatalog()).thenReturn(nonRestCatalog);
     Mockito.when(wrapper.forwardsUserToken()).thenReturn(false);
     resetContext(wrapperManager, true);
@@ -542,7 +545,7 @@ public class TestIcebergMetadataAuthorizationMethodInterceptor {
   @Test
   public void testShouldSkipAuthorizationReturnsFalseWhenCatalogDoesNotExist() {
     IcebergCatalogWrapperManager wrapperManager = Mockito.mock(IcebergCatalogWrapperManager.class);
-    Mockito.when(wrapperManager.getCatalogWrapper(TEST_CATALOG))
+    Mockito.when(wrapperManager.getCatalogWrapper(TEST_CATALOG_PREFIX))
         .thenThrow(
             new NoSuchCatalogException(
                 "Couldn't find Iceberg configuration for catalog %s", TEST_CATALOG));
@@ -554,7 +557,7 @@ public class TestIcebergMetadataAuthorizationMethodInterceptor {
     assertFalse(
         interceptor.shouldSkipAuthorization(
             Map.of(Entity.EntityType.CATALOG, NameIdentifier.of(TEST_METALAKE, TEST_CATALOG))));
-    Mockito.verify(wrapperManager).getCatalogWrapper(TEST_CATALOG);
+    Mockito.verify(wrapperManager).getCatalogWrapper(TEST_CATALOG_PREFIX);
   }
 
   private void resetContext(IcebergCatalogWrapperManager wrapperManager) {
@@ -575,7 +578,7 @@ public class TestIcebergMetadataAuthorizationMethodInterceptor {
     IcebergCatalogWrapperManager wrapperManager = Mockito.mock(IcebergCatalogWrapperManager.class);
     CatalogWrapperForREST wrapper = Mockito.mock(CatalogWrapperForREST.class);
     RESTCatalog restCatalog = Mockito.mock(RESTCatalog.class);
-    Mockito.when(wrapperManager.getCatalogWrapper(TEST_CATALOG)).thenReturn(wrapper);
+    Mockito.when(wrapperManager.getCatalogWrapper(TEST_CATALOG_PREFIX)).thenReturn(wrapper);
     Mockito.when(wrapper.getCatalog()).thenReturn(restCatalog);
     Mockito.when(wrapper.forwardsUserToken()).thenReturn(true);
     resetContext(wrapperManager, false);
@@ -613,7 +616,7 @@ public class TestIcebergMetadataAuthorizationMethodInterceptor {
     IcebergCatalogWrapperManager wrapperManager = Mockito.mock(IcebergCatalogWrapperManager.class);
     CatalogWrapperForREST wrapper = Mockito.mock(CatalogWrapperForREST.class);
     RESTCatalog restCatalog = Mockito.mock(RESTCatalog.class);
-    Mockito.when(wrapperManager.getCatalogWrapper(TEST_CATALOG)).thenReturn(wrapper);
+    Mockito.when(wrapperManager.getCatalogWrapper(TEST_CATALOG_PREFIX)).thenReturn(wrapper);
     Mockito.when(wrapper.getCatalog()).thenReturn(restCatalog);
     Mockito.when(wrapper.forwardsUserToken()).thenReturn(true);
     resetContext(wrapperManager, true);
@@ -647,7 +650,7 @@ public class TestIcebergMetadataAuthorizationMethodInterceptor {
     IcebergCatalogWrapperManager wrapperManager = Mockito.mock(IcebergCatalogWrapperManager.class);
     // An unexpected lookup failure is a server error. (An IllegalArgumentException, such as a
     // prefix naming a catalog that is not an Iceberg catalog, is authorized normally instead.)
-    Mockito.when(wrapperManager.getCatalogWrapper(TEST_CATALOG))
+    Mockito.when(wrapperManager.getCatalogWrapper(TEST_CATALOG_PREFIX))
         .thenThrow(new IllegalStateException("wrapper lookup failed"));
     resetContext(wrapperManager, true);
 

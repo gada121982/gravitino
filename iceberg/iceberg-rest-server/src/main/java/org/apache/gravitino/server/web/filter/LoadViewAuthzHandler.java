@@ -74,7 +74,8 @@ public class LoadViewAuthzHandler implements AuthorizationHandler {
                     "Missing catalog or schema context for view authorization"));
 
     IcebergCatalogWrapper catalogWrapper =
-        IcebergLoadAuthzHandlerHelper.getCatalogWrapper(loadContext.catalog(), nameIdentifierMap);
+        IcebergLoadAuthzHandlerHelper.getCatalogWrapper(
+            loadContext.metalakeName(), loadContext.catalog(), nameIdentifierMap);
     TableIdentifier viewIdentifier = TableIdentifier.of(namespace, viewName);
 
     NameIdentifier viewId =
