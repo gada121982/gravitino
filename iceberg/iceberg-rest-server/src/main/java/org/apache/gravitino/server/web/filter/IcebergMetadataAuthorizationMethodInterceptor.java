@@ -238,7 +238,12 @@ public class IcebergMetadataAuthorizationMethodInterceptor
 
     CatalogWrapperForREST catalogWrapper;
     try {
-      catalogWrapper = wrapperManager.getCatalogWrapper(catalogId.name());
+      // Qualify with the metalake the request addressed; the bare name would resolve against the
+      // server's fallback metalake and silently report "not a REST catalog" for every other one.
+      String metalake = catalogId.namespace().length() > 0 ? catalogId.namespace().level(0) : null;
+      catalogWrapper =
+          wrapperManager.getCatalogWrapper(
+              IcebergRESTUtils.qualifiedCatalogPrefix(metalake, catalogId.name()));
     } catch (NoSuchCatalogException | IllegalArgumentException e) {
       // A missing catalog, or a catalog that is not an Iceberg catalog, is not a REST backend:
       // authorize the request normally. A caller without access gets 403 whatever the name
