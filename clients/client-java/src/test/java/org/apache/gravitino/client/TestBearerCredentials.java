@@ -34,6 +34,16 @@ public class TestBearerCredentials {
   }
 
   @Test
+  void testRecognisesPersonalAccessToken() {
+    String pat = "dp_pat_AbC123xyZ789_" + "q".repeat(43);
+    Assertions.assertTrue(BearerCredentials.isBearerToken(pat));
+    Assertions.assertTrue(BearerCredentials.isBearerToken("Bearer " + pat));
+    Assertions.assertEquals(pat, BearerCredentials.token("Bearer " + pat));
+    Assertions.assertFalse(BearerCredentials.isBearerToken("dp_pat_short_secret"));
+    Assertions.assertFalse(BearerCredentials.isBearerToken("dp_pat_AbC123xyZ789:" + "q".repeat(43)));
+  }
+
+  @Test
   void testClientCredentialIsNotABearerToken() {
     Assertions.assertFalse(BearerCredentials.isBearerToken("client-id:client-secret"));
     // A client id that contains dots is still a client credential because of the ':'.
