@@ -22,6 +22,7 @@ import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Supplier;
+import com.google.common.base.Suppliers;
 import java.util.Arrays;
 import java.util.Map;
 import org.apache.gravitino.Catalog;
@@ -35,11 +36,23 @@ public class GravitinoCatalogManager {
   private static GravitinoCatalogManager gravitinoCatalogManager;
 
   private volatile boolean isClosed = false;
+  private volatile boolean clientBuilt = false;
   private final Cache<String, Catalog> gravitinoCatalogs;
-  private final GravitinoClient gravitinoClient;
+
+  // Built on first use, not at driver start. Building a GravitinoClient loads the metalake, which
+  // needs a credential. Engines that serve users (Spark Connect, SQL warehouse) start with none:
+  // the first call happens inside a user session, whose own token the session-aware provider
+  // resolves. Batch jobs carry their run-as token from the start, so for them nothing changes.
+  private final Supplier<GravitinoClient> gravitinoClient;
 
   private GravitinoCatalogManager(Supplier<GravitinoClient> clientBuilder) {
-    this.gravitinoClient = clientBuilder.get();
+    this.gravitinoClient =
+        Suppliers.memoize(
+            () -> {
+              GravitinoClient client = clientBuilder.get();
+              clientBuilt = true;
+              return client;
+            });
     // Will not evict catalog by default
     this.gravitinoCatalogs = Caffeine.newBuilder().build();
   }
@@ -62,7 +75,9 @@ public class GravitinoCatalogManager {
   public void close() {
     Preconditions.checkState(!isClosed, "Gravitino Catalog is already closed");
     isClosed = true;
-    gravitinoClient.close();
+    if (clientBuilt) {
+      gravitinoClient.get().close();
+    }
     gravitinoCatalogManager = null;
   }
 
@@ -76,7 +91,7 @@ public class GravitinoCatalogManager {
   }
 
   public void loadRelationalCatalogs() {
-    Catalog[] catalogs = gravitinoClient.listCatalogsInfo();
+    Catalog[] catalogs = gravitinoClient.get().listCatalogsInfo();
     Arrays.stream(catalogs)
         .filter(catalog -> Catalog.Type.RELATIONAL.equals(catalog.type()))
         .forEach(catalog -> gravitinoCatalogs.put(catalog.name(), catalog));
@@ -87,7 +102,7 @@ public class GravitinoCatalogManager {
   }
 
   private Catalog loadCatalog(String catalogName) {
-    Catalog catalog = gravitinoClient.loadCatalog(catalogName);
+    Catalog catalog = gravitinoClient.get().loadCatalog(catalogName);
     Preconditions.checkArgument(
         Catalog.Type.RELATIONAL.equals(catalog.type()), "Only support relational catalog");
     LOG.info("Load catalog {} from Gravitino successfully.", catalogName);

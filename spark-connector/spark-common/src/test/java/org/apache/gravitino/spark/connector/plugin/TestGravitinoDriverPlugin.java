@@ -87,4 +87,34 @@ public class TestGravitinoDriverPlugin {
     Assertions.assertEquals("rest", conf.get("spark.sql.catalog.sales.type"));
     Assertions.assertEquals("lake.sales", conf.get("spark.sql.catalog.sales.warehouse"));
   }
+
+  // A run-as job's access token is sent as-is: Iceberg must get it as "token" (not "credential",
+  // which it would try to exchange) and must not try to refresh it.
+  @Test
+  void testIcebergRestCatalogConfUsesBearerTokenAsToken() {
+    String jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1In0.c2ln";
+    Map<String, String> conf =
+        GravitinoDriverPlugin.icebergRestCatalogConf(
+            "sales", "lake", "https://rest.example.com/iceberg/", jwt, "", "", "gravitino");
+
+    Assertions.assertEquals(jwt, conf.get("spark.sql.catalog.sales.token"));
+    Assertions.assertEquals("false", conf.get("spark.sql.catalog.sales.token-refresh-enabled"));
+    Assertions.assertFalse(conf.containsKey("spark.sql.catalog.sales.credential"));
+  }
+
+  @Test
+  void testHasStartupCredential() {
+    org.apache.spark.SparkConf oauthNoCred =
+        new org.apache.spark.SparkConf(false).set("spark.sql.gravitino.authType", "oauth2");
+    Assertions.assertFalse(GravitinoDriverPlugin.hasStartupCredential(oauthNoCred));
+
+    org.apache.spark.SparkConf oauthWithToken =
+        new org.apache.spark.SparkConf(false)
+            .set("spark.sql.gravitino.authType", "oauth2")
+            .set("spark.sql.gravitino.oauth2.credential", "a.b.c");
+    Assertions.assertTrue(GravitinoDriverPlugin.hasStartupCredential(oauthWithToken));
+
+    Assertions.assertTrue(
+        GravitinoDriverPlugin.hasStartupCredential(new org.apache.spark.SparkConf(false)));
+  }
 }

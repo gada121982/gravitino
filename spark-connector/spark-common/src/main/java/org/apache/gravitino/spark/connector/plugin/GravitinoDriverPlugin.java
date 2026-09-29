@@ -41,6 +41,7 @@ import javax.annotation.Nullable;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.gravitino.Catalog;
 import org.apache.gravitino.auth.AuthProperties;
+import org.apache.gravitino.client.BearerCredentials;
 import org.apache.gravitino.client.GravitinoClient;
 import org.apache.gravitino.client.GravitinoClient.ClientBuilder;
 import org.apache.gravitino.client.GravitinoClientConfiguration;
@@ -144,8 +145,16 @@ public class GravitinoDriverPlugin implements DriverPlugin {
             () ->
                 createGravitinoClient(
                     gravitinoUri, metalake, conf, sc.sparkUser(), gravitinoClientConfig));
-    catalogManager.loadRelationalCatalogs();
-    registerGravitinoCatalogs(conf, catalogManager.getCatalogs());
+    if (hasStartupCredential(conf)) {
+      catalogManager.loadRelationalCatalogs();
+      registerGravitinoCatalogs(conf, catalogManager.getCatalogs());
+    } else {
+      // Engines that serve users (Spark Connect, SQL warehouse) carry no platform credential: at
+      // driver start there is no user yet, so nothing can be listed. Catalogs are registered per
+      // session by CatalogSyncExtension, with that session's own token.
+      LOG.info(
+          "No startup OAuth2 credential; catalogs will be registered per session, not at start.");
+    }
     registerSqlExtensions(conf);
     return Collections.emptyMap();
   }
@@ -155,6 +164,21 @@ public class GravitinoDriverPlugin implements DriverPlugin {
     if (catalogManager != null) {
       catalogManager.close();
     }
+  }
+
+  /**
+   * Whether the driver has an identity to list catalogs with at start. Non-OAuth2 auth types always
+   * do; OAuth2 only when a credential (a batch job's run-as token, or a legacy client credential)
+   * is in SparkConf.
+   */
+  @VisibleForTesting
+  static boolean hasStartupCredential(SparkConf conf) {
+    String authType =
+        conf.get(GravitinoSparkConfig.GRAVITINO_AUTH_TYPE, AuthProperties.SIMPLE_AUTH_TYPE);
+    if (!AuthProperties.isOAuth2(authType)) {
+      return true;
+    }
+    return StringUtils.isNotBlank(conf.get(GravitinoSparkConfig.GRAVITINO_OAUTH2_CREDENTIAL, ""));
   }
 
   private void registerGravitinoCatalogs(
@@ -246,7 +270,12 @@ public class GravitinoDriverPlugin implements DriverPlugin {
     catalogConf.put(prefix + ".uri", restUri);
     catalogConf.put(prefix + ".warehouse", metalake + "." + catalogName);
     catalogConf.put(prefix + "." + ICEBERG_ACCESS_DELEGATION_HEADER, ICEBERG_REMOTE_SIGNING);
-    if (StringUtils.isNotBlank(credential)) {
+    if (BearerCredentials.isBearerToken(credential)) {
+      // The run-as user's access token. Iceberg sends it as-is; it cannot refresh it (there is no
+      // secret to exchange), so refreshing is turned off and a run outliving it fails.
+      catalogConf.put(prefix + ".token", BearerCredentials.token(credential));
+      catalogConf.put(prefix + ".token-refresh-enabled", "false");
+    } else if (StringUtils.isNotBlank(credential)) {
       catalogConf.put(prefix + ".credential", credential);
     }
     if (StringUtils.isNotBlank(oauth2ServerUri)) {
@@ -311,8 +340,9 @@ public class GravitinoDriverPlugin implements DriverPlugin {
       builder.withBasicAuth(username, password);
     } else if (AuthProperties.isOAuth2(authType)) {
       String oAuthUri = getRequiredConfig(sparkConf, GravitinoSparkConfig.GRAVITINO_OAUTH2_URI);
-      String credential =
-          getRequiredConfig(sparkConf, GravitinoSparkConfig.GRAVITINO_OAUTH2_CREDENTIAL);
+      // Optional: engines serving users carry no shared credential; the session-aware provider
+      // then resolves each call's credential from the active session and fails closed without one.
+      String credential = sparkConf.get(GravitinoSparkConfig.GRAVITINO_OAUTH2_CREDENTIAL, "");
       String path = getRequiredConfig(sparkConf, GravitinoSparkConfig.GRAVITINO_OAUTH2_PATH);
       String scope = getRequiredConfig(sparkConf, GravitinoSparkConfig.GRAVITINO_OAUTH2_SCOPE);
       SessionAwareOAuth2TokenProvider oAuth2TokenProvider =

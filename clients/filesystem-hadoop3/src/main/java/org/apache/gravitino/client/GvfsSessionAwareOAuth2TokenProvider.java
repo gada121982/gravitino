@@ -40,6 +40,10 @@ import org.slf4j.LoggerFactory;
  *       instead of silent admin impersonation.
  * </ol>
  *
+ * <p>The resolved credential is either a bearer access token (the user's IAM token, or a run-as
+ * job's short-lived token), sent as-is and never exchanged or refreshed, or a legacy {@code
+ * clientId:clientSecret} exchanged via client credentials. See {@link BearerCredentials}.
+ *
  * <p>The filesystem-hadoop3 module cannot depend on Spark, so both Spark classes are loaded via
  * reflection. This keeps the provider safe to load in non-Spark environments (plain Hadoop, Flink,
  * Trino, etc.) where only the shared-credential fallback applies.
@@ -91,6 +95,11 @@ public class GvfsSessionAwareOAuth2TokenProvider extends OAuth2TokenProvider {
           "GvfsSessionAwareOAuth2TokenProvider: no per-user OAuth2 credential available "
               + "(spark.sql.gravitino.oauth2.credential not set in active SparkSession and no "
               + "shared fallback configured). Refusing to vend admin token.");
+    }
+    if (BearerCredentials.isBearerToken(credential)) {
+      // The user's own token; Gravitino verifies it. No exchange, no refresh: an expired token
+      // fails the request, and a new session with a fresh token recovers.
+      return BearerCredentials.token(credential);
     }
     String token = tokenCache.get(credential);
 
