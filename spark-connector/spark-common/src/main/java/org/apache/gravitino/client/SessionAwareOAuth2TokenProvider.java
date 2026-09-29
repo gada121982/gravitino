@@ -32,6 +32,12 @@ import org.apache.spark.sql.SparkSession;
  * <p>This enables multi-tenant identity: CatalogSyncExtension sets
  * "spark.sql.gravitino.oauth2.credential" per-session, and all Gravitino API calls within that
  * session automatically use the user's own OAuth2 identity.
+ *
+ * <p>The credential is either a bearer access token (the user's IAM token, or a run-as job's
+ * short-lived token) — sent to Gravitino as-is, never exchanged or refreshed — or a legacy {@code
+ * clientId:clientSecret}, exchanged via client credentials. See {@link BearerCredentials}. The
+ * shared credential is optional: engines serving users (Spark Connect, SQL warehouse) carry none,
+ * so a call with no session credential fails instead of running as a platform identity.
  */
 public class SessionAwareOAuth2TokenProvider extends OAuth2TokenProvider {
 
@@ -46,6 +52,16 @@ public class SessionAwareOAuth2TokenProvider extends OAuth2TokenProvider {
   @Override
   protected synchronized String getAccessToken() {
     String credential = resolveCredential();
+    if (StringUtils.isBlank(credential)) {
+      throw new SecurityException(
+          "No Gravitino credential for this session: spark.sql.gravitino.oauth2.credential is"
+              + " not set and no shared credential is configured");
+    }
+    if (BearerCredentials.isBearerToken(credential)) {
+      // The caller's own token. Gravitino verifies it; an expired token fails that request,
+      // and a new session with a fresh token recovers.
+      return BearerCredentials.token(credential);
+    }
     String token = tokenCache.get(credential);
 
     Long expires = OAuth2ClientUtil.expiresAtMillis(token);
@@ -101,8 +117,6 @@ public class SessionAwareOAuth2TokenProvider extends OAuth2TokenProvider {
     @Override
     protected SessionAwareOAuth2TokenProvider internalBuild() {
       Preconditions.checkArgument(
-          StringUtils.isNotBlank(credential), "OAuth2TokenProvider must set credential");
-      Preconditions.checkArgument(
           StringUtils.isNotBlank(scope), "OAuth2TokenProvider must set scope");
       Preconditions.checkArgument(
           StringUtils.isNotBlank(path), "OAuth2TokenProvider must set path");
@@ -113,11 +127,14 @@ public class SessionAwareOAuth2TokenProvider extends OAuth2TokenProvider {
       provider.scope = scope;
       provider.path = path;
 
-      // Fetch initial token with shared credential
-      provider.tokenCache.put(
-          credential,
-          OAuth2ClientUtil.fetchToken(client, Collections.emptyMap(), credential, scope, path)
-              .getAccessToken());
+      // Fetch an initial token only for a legacy client credential; a bearer token is used as-is
+      // and a missing shared credential is resolved per session.
+      if (StringUtils.isNotBlank(credential) && !BearerCredentials.isBearerToken(credential)) {
+        provider.tokenCache.put(
+            credential,
+            OAuth2ClientUtil.fetchToken(client, Collections.emptyMap(), credential, scope, path)
+                .getAccessToken());
+      }
       return provider;
     }
   }
