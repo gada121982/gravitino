@@ -29,15 +29,18 @@ import java.util.regex.Pattern;
  * spark.sql.gravitino.oauth2.credential}), so the providers use this to decide whether to send the
  * value as-is or to run the client-credentials exchange.
  *
- * <p>A bearer token here is a compact JWS: three base64url segments separated by dots, optionally
- * prefixed with {@code "Bearer "}. A client credential is {@code clientId:clientSecret} and never
- * matches, because ':' is not a base64url character.
+ * <p>A bearer token here is either a compact JWS (three base64url segments separated by dots) or a
+ * Dataprise personal access token ({@code dp_pat_<id>_<secret>}), optionally prefixed with {@code
+ * "Bearer "}. A client credential is {@code clientId:clientSecret} and never matches, because ':'
+ * is in neither form.
  */
 public final class BearerCredentials {
 
   private static final String BEARER_PREFIX = "Bearer ";
   private static final Pattern COMPACT_JWS =
       Pattern.compile("^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$");
+  private static final Pattern PERSONAL_ACCESS_TOKEN =
+      Pattern.compile("^dp_pat_[A-Za-z0-9]{12}_[A-Za-z0-9]{40,64}$");
 
   private BearerCredentials() {}
 
@@ -46,7 +49,11 @@ public final class BearerCredentials {
    * @return true when the credential is a bearer access token to be sent as-is
    */
   public static boolean isBearerToken(String credential) {
-    return credential != null && COMPACT_JWS.matcher(strip(credential)).matches();
+    if (credential == null) {
+      return false;
+    }
+    String c = strip(credential);
+    return COMPACT_JWS.matcher(c).matches() || PERSONAL_ACCESS_TOKEN.matcher(c).matches();
   }
 
   /**
