@@ -40,7 +40,8 @@ public class TestBearerCredentials {
     Assertions.assertTrue(BearerCredentials.isBearerToken("Bearer " + pat));
     Assertions.assertEquals(pat, BearerCredentials.token("Bearer " + pat));
     Assertions.assertFalse(BearerCredentials.isBearerToken("dp_pat_short_secret"));
-    Assertions.assertFalse(BearerCredentials.isBearerToken("dp_pat_AbC123xyZ789:" + "q".repeat(43)));
+    Assertions.assertFalse(
+        BearerCredentials.isBearerToken("dp_pat_AbC123xyZ789:" + "q".repeat(43)));
   }
 
   @Test
