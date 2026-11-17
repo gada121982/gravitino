@@ -21,18 +21,98 @@ package org.apache.gravitino.iceberg.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 
 import com.google.common.collect.ImmutableMap;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import org.apache.iceberg.PartitionSpec;
+import org.apache.iceberg.Schema;
+import org.apache.iceberg.SortOrder;
+import org.apache.iceberg.TableMetadata;
+import org.apache.iceberg.TableMetadataParser;
+import org.apache.iceberg.rest.credentials.Credential;
+import org.apache.iceberg.rest.credentials.ImmutableCredential;
+import org.apache.iceberg.rest.responses.LoadTableResponse;
+import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.Test;
 
 /**
- * Tests the prefix-scoped signer route used when the remote catalog cannot load a table that is not
- * committed yet, which is the case for a staged create (CTAS).
+ * Tests the federated wrapper's static helpers: the prefix-scoped signer route used when the remote
+ * catalog cannot load a table that is not committed yet (a staged create, CTAS), and the removal of
+ * the remote catalog's signer config from remote table responses.
  */
 public class TestFederatedCatalogWrapper {
+
+  private static final String LOCATION = "s3://bucket/db/tbl";
+
+  private static TableMetadata tableMetadata() {
+    return TableMetadataParser.fromJson(
+        LOCATION + "/metadata/v1.metadata.json",
+        TableMetadataParser.toJson(
+            TableMetadata.newTableMetadata(
+                new Schema(Types.NestedField.required(1, "id", Types.IntegerType.get())),
+                PartitionSpec.unpartitioned(),
+                SortOrder.unsorted(),
+                LOCATION,
+                Collections.emptyMap())));
+  }
+
+  @Test
+  void testRemoteSignerConfigIsRemoved() {
+    // What Lakekeeper returns for a remote-signing table: its own signer URI (the in-cluster base
+    // URI) and per-table signer route, under both the S3-namespaced and the generic keys.
+    Map<String, String> upstreamConfig = new HashMap<>();
+    upstreamConfig.put("s3.remote-signing-enabled", "true");
+    upstreamConfig.put("s3.signer", "S3V4RestSigner");
+    upstreamConfig.put(
+        "s3.signer.uri", "http://lakekeeper.lakekeeper.svc.cluster.local:8181/catalog/");
+    upstreamConfig.put("s3.signer.endpoint", "v1/signer/wh/tabular-id/t/v1/aws/s3/sign");
+    upstreamConfig.put(
+        "signer.uri", "http://lakekeeper.lakekeeper.svc.cluster.local:8181/catalog/");
+    upstreamConfig.put("signer.endpoint", "v1/signer/wh/tabular-id/t/v1/aws/s3/sign");
+    upstreamConfig.put("s3.region", "HCM03");
+    upstreamConfig.put("s3.endpoint", "https://hcm03.vstorage.vngcloud.vn");
+    upstreamConfig.put("s3.path-style-access", "true");
+    TableMetadata metadata = tableMetadata();
+    List<Credential> credentials =
+        Collections.singletonList(
+            ImmutableCredential.builder()
+                .prefix(LOCATION)
+                .config(ImmutableMap.of("s3.access-key-id", "key"))
+                .build());
+    LoadTableResponse upstream =
+        LoadTableResponse.builder()
+            .withTableMetadata(metadata)
+            .addAllConfig(upstreamConfig)
+            .addAllCredentials(credentials)
+            .build();
+
+    LoadTableResponse cleaned = FederatedCatalogWrapper.withoutRemoteSignerConfig(upstream);
+
+    assertEquals(
+        ImmutableMap.of(
+            "s3.region", "HCM03",
+            "s3.endpoint", "https://hcm03.vstorage.vngcloud.vn",
+            "s3.path-style-access", "true"),
+        cleaned.config());
+    assertEquals(credentials, cleaned.credentials());
+    assertEquals(metadata.metadataFileLocation(), cleaned.metadataLocation());
+    assertEquals(LOCATION, cleaned.tableMetadata().location());
+  }
+
+  @Test
+  void testResponseWithoutRemoteSignerConfigIsUnchanged() {
+    LoadTableResponse upstream =
+        LoadTableResponse.builder()
+            .withTableMetadata(tableMetadata())
+            .addAllConfig(ImmutableMap.of("s3.region", "HCM03"))
+            .build();
+
+    assertSame(upstream, FederatedCatalogWrapper.withoutRemoteSignerConfig(upstream));
+  }
 
   @Test
   void testPrefixScopedSignPath() {

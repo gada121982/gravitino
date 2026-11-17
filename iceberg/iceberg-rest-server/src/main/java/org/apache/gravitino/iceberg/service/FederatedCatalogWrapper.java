@@ -23,11 +23,13 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -109,6 +111,23 @@ public class FederatedCatalogWrapper extends CatalogWrapperForREST {
   // Reserved REST catalog property naming the path segment the remote catalog is addressed under
   // (Lakekeeper puts the warehouse id here). ResourcePaths keeps its own copy private.
   private static final String REST_PREFIX_PROPERTY = "prefix";
+
+  /**
+   * Config keys carrying the remote catalog's own remote-signing setup: where to sign and whether
+   * to sign. They address the remote catalog (Lakekeeper advertises its base URI, which may be an
+   * in-cluster address clients cannot resolve), and signing must not bypass this server anyway.
+   * They are dropped from every remote table response; {@link #withRemoteSigning} adds this
+   * server's signer config back when the client asks for remote signing. Both the S3-namespaced
+   * keys (Iceberg 1.10 and older clients) and the generic ones (Iceberg 1.11+) are listed.
+   */
+  private static final Set<String> REMOTE_SIGNER_CONFIG_KEYS =
+      ImmutableSet.of(
+          "s3.remote-signing-enabled",
+          "s3.signer",
+          "s3.signer.uri",
+          "s3.signer.endpoint",
+          "signer.uri",
+          "signer.endpoint");
 
   /**
    * Config key prefixes that carry storage credentials. With Gravitino credential vending, keys
@@ -847,7 +866,33 @@ public class FederatedCatalogWrapper extends CatalogWrapperForREST {
   private LoadTableResponse rewriteRemoteLoadTable(
       TableIdentifier identifier, LoadTableResponse upstream) {
     return IcebergRESTUtils.rewriteLoadTableCredentials(
-        catalogCredentialManager.catalogName(), identifier, upstream);
+        catalogCredentialManager.catalogName(), identifier, withoutRemoteSignerConfig(upstream));
+  }
+
+  /**
+   * Removes the remote catalog's remote-signing config from a remote table response, so a client
+   * never signs against the remote catalog. Without this, a client asking for remote signing gets
+   * this server's signer endpoint combined with the remote catalog's signer URI, and sends its sign
+   * requests to a host it cannot reach.
+   *
+   * @param upstream the table response returned by the remote catalog
+   * @return the response without {@link #REMOTE_SIGNER_CONFIG_KEYS}, or {@code upstream} itself
+   *     when it carries none of them
+   */
+  @VisibleForTesting
+  static LoadTableResponse withoutRemoteSignerConfig(LoadTableResponse upstream) {
+    Map<String, String> config = upstream.config();
+    if (config == null || config.keySet().stream().noneMatch(REMOTE_SIGNER_CONFIG_KEYS::contains)) {
+      return upstream;
+    }
+    LoadTableResponse.Builder builder =
+        LoadTableResponse.builder()
+            .withTableMetadata(upstream.tableMetadata())
+            .addAllConfig(Maps.filterKeys(config, key -> !REMOTE_SIGNER_CONFIG_KEYS.contains(key)));
+    if (upstream.credentials() != null) {
+      builder.addAllCredentials(upstream.credentials());
+    }
+    return builder.build();
   }
 
   /**
