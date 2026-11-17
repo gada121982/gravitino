@@ -37,7 +37,6 @@ import org.apache.gravitino.UserPrincipal;
 import org.apache.gravitino.authorization.AccessControlDispatcher;
 import org.apache.gravitino.exceptions.NoSuchGroupException;
 import org.apache.gravitino.iceberg.common.utils.IcebergIdentifierUtils;
-import org.apache.gravitino.iceberg.service.authorization.IcebergRESTServerContext;
 import org.apache.gravitino.listener.api.event.IcebergRequestContext;
 import org.apache.gravitino.meta.PolicyEntity;
 import org.apache.gravitino.policy.ColumnMaskContent;
@@ -87,20 +86,20 @@ public final class ExperimentalIcebergReadRestrictionLoader
           "Iceberg read restrictions require authorization; set gravitino.authorization.enable=true");
     }
 
-    String metalake = IcebergRESTServerContext.getInstance().metalakeName();
+    // The Iceberg REST prefix may be metalake-qualified ("{metalake}.{catalog}"), so resolve
+    // policies against the metalake and catalog the request addressed. The raw prefix is not a
+    // catalog name, and the server-configured metalake is only the fallback for a bare prefix.
+    String metalake = context.metalakeName();
+    String catalogName = context.simpleCatalogName();
     NameIdentifier tableName =
         IcebergIdentifierUtils.toGravitinoTableIdentifier(
-            metalake,
-            context.catalogName(),
-            tableIdentifier,
-            HierarchicalSchemaUtil.schemaSeparator());
+            metalake, catalogName, tableIdentifier, HierarchicalSchemaUtil.schemaSeparator());
     NameIdentifierUtil.checkMetadataObjectName(
         NameIdentifierUtil.ofMetalake(metalake), Entity.EntityType.METALAKE);
     NameIdentifierUtil.checkMetadataObjectName(
-        NameIdentifierUtil.ofCatalog(metalake, context.catalogName()), Entity.EntityType.CATALOG);
+        NameIdentifierUtil.ofCatalog(metalake, catalogName), Entity.EntityType.CATALOG);
     NameIdentifierUtil.checkMetadataObjectName(
-        NameIdentifierUtil.ofSchema(
-            metalake, context.catalogName(), tableName.namespace().level(2)),
+        NameIdentifierUtil.ofSchema(metalake, catalogName, tableName.namespace().level(2)),
         Entity.EntityType.SCHEMA);
     Schema schema = response.tableMetadata().schema();
     MetadataObject table = NameIdentifierUtil.toMetadataObject(tableName, Entity.EntityType.TABLE);
@@ -111,7 +110,7 @@ public final class ExperimentalIcebergReadRestrictionLoader
       NameIdentifier columnName =
           NameIdentifierUtil.ofColumn(
               metalake,
-              context.catalogName(),
+              catalogName,
               tableName.namespace().level(2),
               tableName.name(),
               field.name());

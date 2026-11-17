@@ -717,6 +717,8 @@ public class TestExperimentalIcebergReadRestrictionLoader {
       IcebergRESTServerContext.create(configProvider, false, true, false, null);
       IcebergRequestContext request = mock(IcebergRequestContext.class);
       when(request.catalogName()).thenReturn(catalog);
+      when(request.metalakeName()).thenReturn(metalake);
+      when(request.simpleCatalogName()).thenReturn(catalog);
       when(request.userName()).thenReturn("alice");
       return new ExperimentalIcebergReadRestrictionLoader().load(request, table, response);
     } finally {
