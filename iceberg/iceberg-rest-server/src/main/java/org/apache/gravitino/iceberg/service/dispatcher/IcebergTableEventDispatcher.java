@@ -252,7 +252,7 @@ public class IcebergTableEventDispatcher implements IcebergTableOperationDispatc
       IcebergRequestContext context, TableIdentifier tableIdentifier, MetricsReport report) {
     NameIdentifier gravitinoNameIdentifier =
         IcebergRESTUtils.getGravitinoNameIdentifier(
-            metalakeName, context.catalogName(), tableIdentifier);
+            context.metalakeName(), context.simpleCatalogName(), tableIdentifier);
     eventBus.dispatchEvent(new IcebergReportTableMetricsPreEvent(context, gravitinoNameIdentifier));
     try {
       // The delegate checks existence without a table-exists event of its own: the client
@@ -370,7 +370,7 @@ public class IcebergTableEventDispatcher implements IcebergTableOperationDispatc
       FetchScanTasksRequest request) {
     NameIdentifier gravitinoNameIdentifier =
         IcebergRESTUtils.getGravitinoNameIdentifier(
-            metalakeName, context.catalogName(), tableIdentifier);
+            context.metalakeName(), context.simpleCatalogName(), tableIdentifier);
     eventBus.dispatchEvent(new IcebergFetchScanTasksPreEvent(context, gravitinoNameIdentifier));
     FetchScanTasksResponse fetchScanTasksResponse;
     try {

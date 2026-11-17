@@ -198,7 +198,8 @@ public class IcebergViewHookDispatcher implements IcebergViewOperationDispatcher
    * @param namespace The Iceberg namespace containing the view.
    * @param viewName The name of the view.
    */
-  private void importView(String metalake, String catalogName, Namespace namespace, String viewName) {
+  private void importView(
+      String metalake, String catalogName, Namespace namespace, String viewName) {
     importView(metalake, catalogName, namespace, viewName, AuditInfo.EMPTY);
   }
 

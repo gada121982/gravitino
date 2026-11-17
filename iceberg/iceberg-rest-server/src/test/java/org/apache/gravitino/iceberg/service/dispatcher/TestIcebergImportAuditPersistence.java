@@ -332,7 +332,7 @@ public class TestIcebergImportAuditPersistence extends TestJDBCBackend {
                 return mock(LoadViewResponse.class);
               });
       new IcebergViewHookDispatcher(
-              backendDispatcher, mock(IcebergNamespaceOperationDispatcher.class), METALAKE)
+              backendDispatcher, mock(IcebergNamespaceOperationDispatcher.class))
           .createView(f.context, namespace, request);
       Assertions.assertEquals(
           "alice",
@@ -489,6 +489,8 @@ public class TestIcebergImportAuditPersistence extends TestJDBCBackend {
       IcebergRESTServerContext.create(provider, false, false, true, null);
       context = mock(IcebergRequestContext.class);
       when(context.catalogName()).thenReturn(CATALOG);
+      when(context.metalakeName()).thenReturn(METALAKE);
+      when(context.simpleCatalogName()).thenReturn(CATALOG);
       when(context.userName()).thenReturn("alice");
     }
 

@@ -566,7 +566,7 @@ public abstract class BaseCatalog implements TableCatalog, SupportsNamespaces, F
     // Gravitino only supports flat (1-level) namespaces.
     // Verify the parent namespace exists, then return empty (no sub-namespaces).
     try {
-      gravitinoCatalogClient.asSchemas().loadSchema(namespace[0]);
+      gravitinoCatalog().asSchemas().loadSchema(namespace[0]);
     } catch (NoSuchSchemaException e) {
       throw new NoSuchNamespaceException(namespace);
     }

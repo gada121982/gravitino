@@ -56,7 +56,8 @@ class TestIcebergAccessDelegation {
   void testParseIgnoresUnknownMechanisms() {
     Assertions.assertSame(
         IcebergAccessDelegation.none(), IcebergAccessDelegation.parse("unsupported-mode"));
-    IcebergAccessDelegation mixed = IcebergAccessDelegation.parse("unsupported-mode, remote-signing");
+    IcebergAccessDelegation mixed =
+        IcebergAccessDelegation.parse("unsupported-mode, remote-signing");
     Assertions.assertTrue(mixed.requestRemoteSigning());
     Assertions.assertFalse(mixed.requestVendedCredentials());
   }

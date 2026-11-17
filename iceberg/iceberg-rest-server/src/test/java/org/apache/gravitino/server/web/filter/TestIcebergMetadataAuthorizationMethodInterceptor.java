@@ -397,7 +397,7 @@ public class TestIcebergMetadataAuthorizationMethodInterceptor {
     // A prefix naming a catalog of another kind is authorized normally instead of failing with
     // an internal error inside the authorization step.
     IcebergCatalogWrapperManager wrapperManager = Mockito.mock(IcebergCatalogWrapperManager.class);
-    Mockito.when(wrapperManager.getCatalogWrapper("glue_catalog"))
+    Mockito.when(wrapperManager.getCatalogWrapper(TEST_METALAKE + ".glue_catalog"))
         .thenThrow(new IllegalArgumentException("Catalog glue_catalog is not an Iceberg catalog"));
     resetContext(wrapperManager, true);
 
@@ -414,7 +414,7 @@ public class TestIcebergMetadataAuthorizationMethodInterceptor {
     // so the remote cannot authorize individual users and this server must.
     IcebergCatalogWrapperManager wrapperManager = Mockito.mock(IcebergCatalogWrapperManager.class);
     CatalogWrapperForREST wrapper = Mockito.mock(CatalogWrapperForREST.class);
-    Mockito.when(wrapperManager.getCatalogWrapper(TEST_CATALOG)).thenReturn(wrapper);
+    Mockito.when(wrapperManager.getCatalogWrapper(TEST_CATALOG_PREFIX)).thenReturn(wrapper);
     Mockito.when(wrapper.isRESTCatalog()).thenReturn(true);
     Mockito.when(wrapper.forwardsUserToken()).thenReturn(false);
     resetContext(wrapperManager, true);
@@ -466,7 +466,7 @@ public class TestIcebergMetadataAuthorizationMethodInterceptor {
   public void testMetricsReportDoesNotSkipAuthorizationForRestCatalog() throws Exception {
     IcebergCatalogWrapperManager wrapperManager = Mockito.mock(IcebergCatalogWrapperManager.class);
     CatalogWrapperForREST wrapper = Mockito.mock(CatalogWrapperForREST.class);
-    Mockito.when(wrapperManager.getCatalogWrapper(TEST_CATALOG)).thenReturn(wrapper);
+    Mockito.when(wrapperManager.getCatalogWrapper(TEST_CATALOG_PREFIX)).thenReturn(wrapper);
     Mockito.when(wrapper.forwardsUserToken()).thenReturn(true);
     resetContext(wrapperManager, true);
 
