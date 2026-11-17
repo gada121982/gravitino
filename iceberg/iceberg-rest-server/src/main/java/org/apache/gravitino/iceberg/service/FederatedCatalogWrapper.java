@@ -849,6 +849,34 @@ public class FederatedCatalogWrapper extends CatalogWrapperForREST {
   }
 
   /**
+   * Decides whether this server's signer config goes into a table response.
+   *
+   * <p>Signing on a federated catalog is proxied to the remote catalog's signer ({@link
+   * #remoteSign}), which holds the storage credentials. Unlike vended credentials it does not need
+   * a credential provider of this catalog covering the table location, so the base class check,
+   * which requires one, would never add the signer config here and clients would not sign at all.
+   *
+   * @param loadTableResponse the table response
+   * @param accessDelegation the access delegation the client requested
+   * @return {@code true} when the client asked for remote signing and the table is on object
+   *     storage
+   */
+  @Override
+  protected boolean shouldGenerateRemoteSign(
+      LoadTableResponse loadTableResponse, IcebergAccessDelegation accessDelegation) {
+    return remoteSignApplies(loadTableResponse.tableMetadata().location(), accessDelegation);
+  }
+
+  @VisibleForTesting
+  static boolean remoteSignApplies(String location, IcebergAccessDelegation accessDelegation) {
+    if (!accessDelegation.requestRemoteSigning()) {
+      return false;
+    }
+    validateCredentialLocation(location);
+    return !isLocalOrHdfsLocation(location);
+  }
+
+  /**
    * Adds this server's signer configuration when the client asked for remote signing. Signing
    * requests then reach {@link #remoteSign}, which proxies them to the remote catalog's signer.
    */
@@ -869,9 +897,9 @@ public class FederatedCatalogWrapper extends CatalogWrapperForREST {
 
   /**
    * Removes the remote catalog's remote-signing config from a remote table response, so a client
-   * never signs against the remote catalog. Without this, a client asking for remote signing gets
-   * this server's signer endpoint combined with the remote catalog's signer URI, and sends its sign
-   * requests to a host it cannot reach.
+   * never signs against the remote catalog. Without this, a client sends its sign requests straight
+   * to the remote catalog's signer, at an address it may not resolve (Lakekeeper advertises its
+   * in-cluster base URI) and around this server's authorization.
    *
    * @param upstream the table response returned by the remote catalog
    * @return the response without {@link #REMOTE_SIGNER_CONFIG_KEYS}, or {@code upstream} itself
