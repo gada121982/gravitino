@@ -266,8 +266,8 @@ public class FederatedCatalogWrapper extends CatalogWrapperForREST {
    * @param identifier the table identifier.
    * @param accessDelegation the access delegation the client requested.
    * @param privilege the caller's privilege, used only with Gravitino credential vending.
-   * @return the load-table response, including rewritten remote credentials or this server's
-   *     signer configuration when requested.
+   * @return the load-table response, including rewritten remote credentials or this server's signer
+   *     configuration when requested.
    */
   @Override
   public LoadTableResponse loadTable(
@@ -294,8 +294,8 @@ public class FederatedCatalogWrapper extends CatalogWrapperForREST {
    * @param namespace the namespace that will own the table.
    * @param request the register-table request.
    * @param accessDelegation the access delegation the client requested.
-   * @return the register response, including rewritten remote credentials or this server's
-   *     signer configuration when requested.
+   * @return the register response, including rewritten remote credentials or this server's signer
+   *     configuration when requested.
    */
   @Override
   public LoadTableResponse registerTable(

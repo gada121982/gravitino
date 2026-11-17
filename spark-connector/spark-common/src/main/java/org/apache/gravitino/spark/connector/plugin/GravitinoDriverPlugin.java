@@ -629,7 +629,8 @@ public class GravitinoDriverPlugin implements DriverPlugin {
    */
   private void configureIcebergRestEagerRegister(SparkConf conf) {
     this.metalakeName = conf.get(GravitinoSparkConfig.GRAVITINO_METALAKE, "");
-    this.icebergRestUri = conf.get(GravitinoSparkConfig.GRAVITINO_ICEBERG_REST_URI, "").trim();
+    this.icebergRestUri =
+        conf.get(GravitinoSparkConfig.GRAVITINO_ICEBERG_REST_EAGER_REGISTER_URI, "").trim();
     this.icebergRestEagerRegister =
         conf.getBoolean(GravitinoSparkConfig.GRAVITINO_ICEBERG_REST_EAGER_REGISTER, false)
             && StringUtils.isNotBlank(icebergRestUri);

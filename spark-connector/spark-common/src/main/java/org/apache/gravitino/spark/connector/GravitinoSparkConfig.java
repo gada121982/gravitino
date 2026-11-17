@@ -38,7 +38,10 @@ public class GravitinoSparkConfig {
   public static final String GRAVITINO_ENABLE_DORIS_SUPPORT =
       GRAVITINO_PREFIX + "enableDorisSupport";
 
-  public static final String GRAVITINO_ICEBERG_REST_URI = GRAVITINO_PREFIX + "iceberg.rest.uri";
+  /** Iceberg REST endpoint used by {@link #GRAVITINO_ICEBERG_REST_EAGER_REGISTER}. */
+  public static final String GRAVITINO_ICEBERG_REST_EAGER_REGISTER_URI =
+      GRAVITINO_PREFIX + "iceberg.rest.uri";
+
   public static final String GRAVITINO_ICEBERG_REST_EAGER_REGISTER =
       GRAVITINO_PREFIX + "iceberg.rest.eagerRegister";
 

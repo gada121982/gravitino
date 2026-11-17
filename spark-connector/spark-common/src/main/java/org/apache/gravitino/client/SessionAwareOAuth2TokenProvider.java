@@ -67,7 +67,13 @@ public class SessionAwareOAuth2TokenProvider extends OAuth2TokenProvider {
     Long expires = OAuth2ClientUtil.expiresAtMillis(token);
     if (expires == null || expires <= System.currentTimeMillis()) {
       token =
-          OAuth2ClientUtil.fetchToken(client, Collections.emptyMap(), credential, scope, path)
+          OAuth2ClientUtil.fetchToken(
+                  client,
+                  Collections.emptyMap(),
+                  credential,
+                  scope,
+                  path,
+                  OAuth2ClientAuthenticationMethod.CLIENT_SECRET_POST)
               .getAccessToken();
       tokenCache.put(credential, token);
     }
@@ -132,7 +138,13 @@ public class SessionAwareOAuth2TokenProvider extends OAuth2TokenProvider {
       if (StringUtils.isNotBlank(credential) && !BearerCredentials.isBearerToken(credential)) {
         provider.tokenCache.put(
             credential,
-            OAuth2ClientUtil.fetchToken(client, Collections.emptyMap(), credential, scope, path)
+            OAuth2ClientUtil.fetchToken(
+                    client,
+                    Collections.emptyMap(),
+                    credential,
+                    scope,
+                    path,
+                    OAuth2ClientAuthenticationMethod.CLIENT_SECRET_POST)
                 .getAccessToken());
       }
       return provider;

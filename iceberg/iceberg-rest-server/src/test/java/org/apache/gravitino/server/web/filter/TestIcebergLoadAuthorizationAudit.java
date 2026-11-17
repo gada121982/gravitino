@@ -81,7 +81,7 @@ class TestIcebergLoadAuthorizationAudit {
     when(configProvider.getMetalakeName()).thenReturn("ml");
     when(configProvider.getDefaultCatalogName()).thenReturn("cat");
     wrapperManager = mock(IcebergCatalogWrapperManager.class);
-    when(wrapperManager.getCatalogWrapper("cat")).thenReturn(mock(CatalogWrapperForREST.class));
+    when(wrapperManager.getCatalogWrapper("ml.cat")).thenReturn(mock(CatalogWrapperForREST.class));
     IcebergRESTServerContext.create(configProvider, false, false, true, wrapperManager);
 
     authorizer = mock(GravitinoAuthorizer.class);
@@ -146,7 +146,7 @@ class TestIcebergLoadAuthorizationAudit {
   @ValueSource(strings = {"loadTable", "loadView"})
   void testBackendForbiddenDuringAuthorizationDoesNotRecordDenial(String operation)
       throws Throwable {
-    when(wrapperManager.getCatalogWrapper("cat"))
+    when(wrapperManager.getCatalogWrapper("ml.cat"))
         .thenThrow(new ForbiddenException("Backend credentials rejected"));
     MethodInvocation invocation = loadInvocation(operation, "cat/");
     try (Response response = (Response) interceptor.invoke(invocation)) {
@@ -184,7 +184,7 @@ class TestIcebergLoadAuthorizationAudit {
   void testNonIcebergCatalogIsClientErrorOnlyForVisibleCatalog(
       String operation, boolean owner, int status) throws Throwable {
     when(authorizer.isOwner(any(), any(), any(), any())).thenReturn(owner);
-    when(wrapperManager.getCatalogWrapper("cat"))
+    when(wrapperManager.getCatalogWrapper("ml.cat"))
         .thenThrow(new IllegalArgumentException("Catalog cat is not an Iceberg catalog"));
     MethodInvocation invocation = loadInvocation(operation, "cat/");
     try (Response response = (Response) interceptor.invoke(invocation)) {
@@ -203,7 +203,7 @@ class TestIcebergLoadAuthorizationAudit {
   void testMissingCatalogDoesNotBecomeInternalError(String operation, boolean owner, int status)
       throws Throwable {
     when(authorizer.isOwner(any(), any(), any(), any())).thenReturn(owner);
-    when(wrapperManager.getCatalogWrapper("cat"))
+    when(wrapperManager.getCatalogWrapper("ml.cat"))
         .thenThrow(new NoSuchCatalogException("Catalog cat does not exist"));
     MethodInvocation invocation = loadInvocation(operation, "cat/");
     try (Response response = (Response) interceptor.invoke(invocation)) {
@@ -227,7 +227,7 @@ class TestIcebergLoadAuthorizationAudit {
         missing
             ? new NoSuchCatalogException("Catalog cat does not exist")
             : new IllegalArgumentException("Catalog cat is not an Iceberg catalog");
-    when(wrapperManager.getCatalogWrapper("cat")).thenThrow(cause);
+    when(wrapperManager.getCatalogWrapper("ml.cat")).thenThrow(cause);
     Class<? extends RuntimeException> expectedType =
         missing ? NoSuchNamespaceException.class : BadRequestException.class;
 
@@ -236,6 +236,7 @@ class TestIcebergLoadAuthorizationAudit {
             expectedType,
             () ->
                 IcebergLoadAuthzHandlerHelper.getCatalogWrapper(
+                    "ml",
                     "cat",
                     Map.of(
                         EntityType.METALAKE, NameIdentifier.of("ml"),
@@ -250,7 +251,9 @@ class TestIcebergLoadAuthorizationAudit {
   @ParameterizedTest
   @ValueSource(strings = {"loadTable", "loadView"})
   void testMalformedCatalogPrefixIsBadRequest(String operation) throws Throwable {
-    MethodInvocation invocation = loadInvocation(operation, "ml.cat/");
+    // "{metalake}.{catalog}" is a valid prefix (metalake-qualified routing), so the malformed case
+    // is a catalog part that still contains the delimiter: catalog names cannot contain '.'.
+    MethodInvocation invocation = loadInvocation(operation, "ml.c.at/");
     try (Response response = (Response) interceptor.invoke(invocation)) {
       assertEquals(400, response.getStatus());
       assertEquals("BadRequestException", ((ErrorResponse) response.getEntity()).type());

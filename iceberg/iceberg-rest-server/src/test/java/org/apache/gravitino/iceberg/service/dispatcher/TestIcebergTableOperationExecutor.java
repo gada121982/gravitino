@@ -261,7 +261,8 @@ public class TestIcebergTableOperationExecutor {
 
     executor.createTable(mockContext, namespace, createRequest);
 
-    verify(mockCatalogWrapper).createTable(namespace, createRequest, false);
+    verify(mockCatalogWrapper)
+        .createTable(namespace, createRequest, IcebergAccessDelegation.none());
 
     TableIdentifier table = TableIdentifier.of(namespace, "test_table");
     UpdateTableRequest updateRequest = updateRequest(schema);
