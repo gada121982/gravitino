@@ -264,7 +264,7 @@ public class IcebergNamespaceEventDispatcher implements IcebergNamespaceOperatio
     TableIdentifier viewIdentifier = TableIdentifier.of(namespace, registerViewRequest.name());
     NameIdentifier nameIdentifier =
         IcebergRESTUtils.getGravitinoNameIdentifier(
-            metalakeName, context.catalogName(), viewIdentifier);
+            context.metalakeName(), context.simpleCatalogName(), viewIdentifier);
 
     eventBus.dispatchEvent(
         new IcebergRegisterViewPreEvent(context, nameIdentifier, registerViewRequest));

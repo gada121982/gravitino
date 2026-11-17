@@ -144,7 +144,8 @@ public class GravitinoDriverPlugin implements DriverPlugin {
     // credential already in SparkConf belongs to the identity the job runs as; a shared engine
     // serving several users must keep resolving credentials per session instead.
     this.metalakeName = metalake;
-    this.icebergRestUri = conf.get(GravitinoSparkConfig.GRAVITINO_ICEBERG_REST_URI, "").trim();
+    this.icebergRestUri =
+        conf.get(GravitinoSparkConfig.GRAVITINO_ICEBERG_REST_EAGER_REGISTER_URI, "").trim();
     this.icebergRestEagerRegister =
         conf.getBoolean(GravitinoSparkConfig.GRAVITINO_ICEBERG_REST_EAGER_REGISTER, false)
             && StringUtils.isNotBlank(icebergRestUri);

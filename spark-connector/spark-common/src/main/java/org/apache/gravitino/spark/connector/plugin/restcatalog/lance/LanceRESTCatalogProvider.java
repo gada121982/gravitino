@@ -65,7 +65,7 @@ public class LanceRESTCatalogProvider implements LakehouseRESTCatalogProvider {
     Map<String, String> headers = new LinkedHashMap<>();
     properties.forEach(
         (key, value) -> {
-          if (StringUtils.startsWithIgnoreCase(key, HEADER_PREFIX)) {
+          if (hasHeaderPrefix(key)) {
             String headerName = key.substring(HEADER_PREFIX.length());
             Preconditions.checkArgument(
                 headerName.matches("[!#$%&'*+.^_`|~0-9A-Za-z-]+"),
@@ -81,8 +81,14 @@ public class LanceRESTCatalogProvider implements LakehouseRESTCatalogProvider {
                 canonicalKey);
           }
         });
-    properties.keySet().removeIf(key -> StringUtils.startsWithIgnoreCase(key, HEADER_PREFIX));
+    properties.keySet().removeIf(key -> hasHeaderPrefix(key));
     properties.putAll(headers);
+  }
+
+  // StringUtils.startsWithIgnoreCase is deprecated in the commons-lang3 on the Spark 4.1 classpath,
+  // which -Werror turns into a build failure; regionMatches behaves the same on every line.
+  private static boolean hasHeaderPrefix(String key) {
+    return key != null && key.regionMatches(true, 0, HEADER_PREFIX, 0, HEADER_PREFIX.length());
   }
 
   @Override

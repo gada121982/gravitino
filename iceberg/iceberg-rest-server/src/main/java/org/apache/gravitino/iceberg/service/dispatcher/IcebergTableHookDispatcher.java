@@ -76,7 +76,8 @@ public class IcebergTableHookDispatcher implements IcebergTableOperationDispatch
     // create and a drop of the same namespace on this server do not both succeed.
     LoadTableResponse response =
         TreeLockUtils.doWithTreeLock(
-            NameIdentifier.of(metalake, context.catalogName(), namespace.level(0)),
+            NameIdentifier.of(
+                context.metalakeName(), context.simpleCatalogName(), namespace.level(0)),
             LockType.READ,
             () -> dispatcher.createTable(context, namespace, createTableRequest));
     // Skip import and ownership for staged creates (credential vending).
@@ -103,7 +104,9 @@ public class IcebergTableHookDispatcher implements IcebergTableOperationDispatch
         isStagedCreateCommit
             ? TreeLockUtils.doWithTreeLock(
                 NameIdentifier.of(
-                    metalake, context.catalogName(), tableIdentifier.namespace().level(0)),
+                    context.metalakeName(),
+                    context.simpleCatalogName(),
+                    tableIdentifier.namespace().level(0)),
                 LockType.READ,
                 () -> dispatcher.updateTable(context, tableIdentifier, updateTableRequest))
             : dispatcher.updateTable(context, tableIdentifier, updateTableRequest);

@@ -112,7 +112,8 @@ public class TestLoadTableAuthzHandler {
   public void testLoadTableStillRejectsGenuineMetadataTableRequests() throws Exception {
     IcebergCatalogWrapperManager wrapperManager = Mockito.mock(IcebergCatalogWrapperManager.class);
     CatalogWrapperForREST catalogWrapper = Mockito.mock(CatalogWrapperForREST.class);
-    when(wrapperManager.getCatalogWrapper(TEST_CATALOG)).thenReturn(catalogWrapper);
+    when(wrapperManager.getCatalogWrapper(TEST_METALAKE + "." + TEST_CATALOG))
+        .thenReturn(catalogWrapper);
     // [db, table] is not an existing namespace - this is a metadata-table request.
     when(catalogWrapper.namespaceExists(Namespace.of("db", "t"))).thenReturn(false);
     resetContext(wrapperManager);
@@ -128,7 +129,8 @@ public class TestLoadTableAuthzHandler {
   public void testBackendFailureKeepsMetadataTableAnswer404() throws Exception {
     IcebergCatalogWrapperManager wrapperManager = Mockito.mock(IcebergCatalogWrapperManager.class);
     CatalogWrapperForREST catalogWrapper = Mockito.mock(CatalogWrapperForREST.class);
-    when(wrapperManager.getCatalogWrapper(TEST_CATALOG)).thenReturn(catalogWrapper);
+    when(wrapperManager.getCatalogWrapper(TEST_METALAKE + "." + TEST_CATALOG))
+        .thenReturn(catalogWrapper);
     when(catalogWrapper.namespaceExists(Namespace.of("db", "t")))
         .thenThrow(new RuntimeException("remote catalog unavailable"));
     resetContext(wrapperManager);
@@ -145,7 +147,8 @@ public class TestLoadTableAuthzHandler {
   public void testLoadFailureOfExistingNamespaceGoesToAuthorization() throws Exception {
     IcebergCatalogWrapperManager wrapperManager = Mockito.mock(IcebergCatalogWrapperManager.class);
     CatalogWrapperForREST catalogWrapper = Mockito.mock(CatalogWrapperForREST.class);
-    when(wrapperManager.getCatalogWrapper(TEST_CATALOG)).thenReturn(catalogWrapper);
+    when(wrapperManager.getCatalogWrapper(TEST_METALAKE + "." + TEST_CATALOG))
+        .thenReturn(catalogWrapper);
     when(catalogWrapper.namespaceExists(Namespace.of("a", "b"))).thenReturn(true);
     when(catalogWrapper.resolvesToMetadataTable(any(TableIdentifier.class)))
         .thenThrow(new ServiceUnavailableException("remote catalog unavailable"));
@@ -208,7 +211,8 @@ public class TestLoadTableAuthzHandler {
   private static void resetContextWithView(InMemoryCatalog catalog) {
     IcebergCatalogWrapperManager wrapperManager = Mockito.mock(IcebergCatalogWrapperManager.class);
     CatalogWrapperForREST catalogWrapper = Mockito.mock(CatalogWrapperForREST.class);
-    when(wrapperManager.getCatalogWrapper(TEST_CATALOG)).thenReturn(catalogWrapper);
+    when(wrapperManager.getCatalogWrapper(TEST_METALAKE + "." + TEST_CATALOG))
+        .thenReturn(catalogWrapper);
     when(catalogWrapper.getCatalog()).thenReturn(catalog);
     when(catalogWrapper.supportsViewOperations()).thenReturn(true);
     when(catalogWrapper.viewExists(TableIdentifier.of("db", "v"))).thenReturn(true);
@@ -244,7 +248,8 @@ public class TestLoadTableAuthzHandler {
   private static void resetContext(InMemoryCatalog catalog) {
     IcebergCatalogWrapperManager wrapperManager = Mockito.mock(IcebergCatalogWrapperManager.class);
     CatalogWrapperForREST catalogWrapper = Mockito.mock(CatalogWrapperForREST.class);
-    when(wrapperManager.getCatalogWrapper(TEST_CATALOG)).thenReturn(catalogWrapper);
+    when(wrapperManager.getCatalogWrapper(TEST_METALAKE + "." + TEST_CATALOG))
+        .thenReturn(catalogWrapper);
     when(catalogWrapper.getCatalog()).thenReturn(catalog);
     when(catalogWrapper.namespaceExists(any(Namespace.class)))
         .thenAnswer(invocation -> catalog.namespaceExists(invocation.getArgument(0)));

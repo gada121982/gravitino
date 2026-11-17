@@ -106,7 +106,13 @@ public class GvfsSessionAwareOAuth2TokenProvider extends OAuth2TokenProvider {
     Long expires = OAuth2ClientUtil.expiresAtMillis(token);
     if (expires == null || expires <= System.currentTimeMillis() + REFRESH_MARGIN_MS) {
       token =
-          OAuth2ClientUtil.fetchToken(client, Collections.emptyMap(), credential, scope, path)
+          OAuth2ClientUtil.fetchToken(
+                  client,
+                  Collections.emptyMap(),
+                  credential,
+                  scope,
+                  path,
+                  OAuth2ClientAuthenticationMethod.CLIENT_SECRET_POST)
               .getAccessToken();
       tokenCache.put(credential, token);
     }

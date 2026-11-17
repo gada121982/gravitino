@@ -65,7 +65,6 @@ import org.junit.jupiter.api.Test;
  */
 public class TestIcebergTableEventDispatcher {
 
-  private static final String METALAKE = "metalake";
   private static final String CATALOG = "catalog";
   private static final Namespace NAMESPACE = Namespace.of("ns");
   private static final TableIdentifier TABLE_ID = TableIdentifier.of(NAMESPACE, "table");
@@ -278,7 +277,7 @@ public class TestIcebergTableEventDispatcher {
   private static IcebergTableEventDispatcher dispatcher(
       EventListenerPlugin listener, IcebergTableOperationDispatcher inner) {
     return new IcebergTableEventDispatcher(
-        inner, new EventBus(Collections.singletonList(listener)), METALAKE);
+        inner, new EventBus(Collections.singletonList(listener)));
   }
 
   private static IcebergTableOperationDispatcher succeedingInner() {

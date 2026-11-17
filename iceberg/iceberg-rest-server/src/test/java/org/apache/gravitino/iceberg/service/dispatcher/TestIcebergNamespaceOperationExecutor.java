@@ -38,6 +38,7 @@ import org.apache.gravitino.EntityFieldLimits;
 import org.apache.gravitino.catalog.lakehouse.iceberg.IcebergConstants;
 import org.apache.gravitino.iceberg.common.IcebergConfig;
 import org.apache.gravitino.iceberg.service.CatalogWrapperForREST;
+import org.apache.gravitino.iceberg.service.IcebergAccessDelegation;
 import org.apache.gravitino.iceberg.service.IcebergCatalogWrapperManager;
 import org.apache.gravitino.iceberg.service.authorization.IcebergRESTServerContext;
 import org.apache.gravitino.iceberg.service.provider.IcebergConfigProvider;
@@ -81,6 +82,7 @@ public class TestIcebergNamespaceOperationExecutor {
     executor = new IcebergNamespaceOperationExecutor(mockWrapperManager, Optional.empty());
 
     mockContext = mock(IcebergRequestContext.class);
+    when(mockContext.accessDelegation()).thenReturn(IcebergAccessDelegation.none());
     when(mockContext.catalogName()).thenReturn("test_catalog");
     // The prefix may be metalake-qualified; production code resolves the pair from it.
     when(mockContext.metalakeName()).thenReturn("test_metalake");
@@ -249,7 +251,8 @@ public class TestIcebergNamespaceOperationExecutor {
 
     Assertions.assertTrue(thrown.getMessage().contains("does not exist"), thrown.getMessage());
     verify(mockCatalogWrapper).loadTableMetadataFromLocation(metadataLocation);
-    verify(mockCatalogWrapper, never()).registerTable(any(), any(), any(Boolean.class));
+    verify(mockCatalogWrapper, never())
+        .registerTable(any(), any(), any(IcebergAccessDelegation.class));
   }
 
   @Test
@@ -291,7 +294,7 @@ public class TestIcebergNamespaceOperationExecutor {
     executor.registerTable(mockContext, namespace, request);
 
     verify(mockCatalogWrapper).loadTableMetadataFromLocation(metadataLocation);
-    verify(mockCatalogWrapper).registerTable(namespace, request, false);
+    verify(mockCatalogWrapper).registerTable(namespace, request, IcebergAccessDelegation.none());
   }
 
   @Test
@@ -465,7 +468,8 @@ public class TestIcebergNamespaceOperationExecutor {
 
     Assertions.assertEquals(expectedMessage, exception.getMessage());
     verify(mockCatalogWrapper).loadTableMetadataFromLocation(metadataLocation);
-    verify(mockCatalogWrapper, never()).registerTable(namespace, request, false);
+    verify(mockCatalogWrapper, never())
+        .registerTable(namespace, request, IcebergAccessDelegation.none());
   }
 
   private static String writeMetadata(Path metadataFile, Schema schema) throws Exception {
