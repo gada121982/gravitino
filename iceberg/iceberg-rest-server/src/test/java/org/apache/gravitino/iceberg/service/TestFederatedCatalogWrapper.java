@@ -20,8 +20,11 @@
 package org.apache.gravitino.iceberg.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.google.common.collect.ImmutableMap;
 import java.util.Collections;
@@ -41,8 +44,9 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Tests the federated wrapper's static helpers: the prefix-scoped signer route used when the remote
- * catalog cannot load a table that is not committed yet (a staged create, CTAS), and the removal of
- * the remote catalog's signer config from remote table responses.
+ * catalog cannot load a table that is not committed yet (a staged create, CTAS), the removal of the
+ * remote catalog's signer config from remote table responses, and when this server's signer config
+ * is added instead.
  */
 public class TestFederatedCatalogWrapper {
 
@@ -101,6 +105,37 @@ public class TestFederatedCatalogWrapper {
     assertEquals(credentials, cleaned.credentials());
     assertEquals(metadata.metadataFileLocation(), cleaned.metadataLocation());
     assertEquals(LOCATION, cleaned.tableMetadata().location());
+  }
+
+  @Test
+  void testRemoteSignAppliesWithoutLocalCredentialProvider() {
+    // The federated catalog configures no credential provider of its own (signing is proxied to the
+    // remote catalog), so remote signing must not depend on one.
+    assertTrue(
+        FederatedCatalogWrapper.remoteSignApplies(
+            LOCATION, IcebergAccessDelegation.of(false, true)));
+    assertTrue(
+        FederatedCatalogWrapper.remoteSignApplies(
+            LOCATION, IcebergAccessDelegation.of(true, true)));
+  }
+
+  @Test
+  void testRemoteSignNotAppliedWhenNotRequested() {
+    assertFalse(
+        FederatedCatalogWrapper.remoteSignApplies(
+            LOCATION, IcebergAccessDelegation.of(true, false)));
+    assertFalse(
+        FederatedCatalogWrapper.remoteSignApplies(LOCATION, IcebergAccessDelegation.none()));
+  }
+
+  @Test
+  void testRemoteSignNotAppliedToLocalOrHdfsTables() {
+    IcebergAccessDelegation remoteSigning = IcebergAccessDelegation.of(false, true);
+    assertFalse(FederatedCatalogWrapper.remoteSignApplies("hdfs://nn/db/tbl", remoteSigning));
+    assertFalse(FederatedCatalogWrapper.remoteSignApplies("file:///tmp/db/tbl", remoteSigning));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> FederatedCatalogWrapper.remoteSignApplies(" ", remoteSigning));
   }
 
   @Test
