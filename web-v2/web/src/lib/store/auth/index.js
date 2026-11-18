@@ -21,6 +21,7 @@ import { createSlice, createAsyncThunk } from '@reduxjs/toolkit'
 import toast from 'react-hot-toast'
 
 import { to, isProdEnv } from '@/lib/utils'
+import { pickUiAuthType } from '@/lib/utils/authType'
 
 import { getAuthConfigsApi, getAuthMeApi, loginApi, basicLoginApi } from '@/lib/api/auth'
 
@@ -41,8 +42,8 @@ export const getAuthConfigs = createAsyncThunk('auth/getAuthConfigs', async () =
 
   oauthUrl = `${res['gravitino.authenticator.oauth.serverUri']}${res['gravitino.authenticator.oauth.tokenPath']}`
 
-  // ** get the first authenticator from the response. response example: "[simple, oauth]"
-  authType = res['gravitino.authenticators'][0].trim()
+  // ** the first authenticator the UI has a login flow for. response example: "[simple, oauth]"
+  authType = pickUiAuthType(res['gravitino.authenticators'])
   anthEnable = res['gravitino.authorization.enable']
 
   localStorage.setItem('oauthUrl', oauthUrl)
