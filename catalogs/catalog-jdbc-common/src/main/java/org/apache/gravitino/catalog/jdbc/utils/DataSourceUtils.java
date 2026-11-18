@@ -65,6 +65,9 @@ public class DataSourceUtils {
           "password",
           "initialSize");
 
+  /** The DBCP2 pool key (in seconds) an operator can set to bound connection validation. */
+  private static final String VALIDATION_QUERY_TIMEOUT_KEY = "validationQueryTimeout";
+
   public static DataSource createDataSource(Map<String, String> properties) {
     return createDataSource(new JdbcConfig(properties));
   }
@@ -109,6 +112,7 @@ public class DataSourceUtils {
     jdbcConfig.getVerifyOnCreate();
     jdbcConfig.getTestOnBorrow();
     jdbcConfig.getConnectTimeoutMs();
+    jdbcConfig.getSocketTimeoutMs();
     jdbcConfig.getMaxWaitMs();
     jdbcConfig.getPoolMaxIdle();
     int minSize = jdbcConfig.getPoolMinSize();
@@ -221,16 +225,23 @@ public class DataSourceUtils {
             : jdbcConfig.getPoolMinSize());
     // Validate connections on borrow when enabled.
     basicDataSource.setTestOnBorrow(jdbcConfig.getTestOnBorrow());
+    // DBCP validates with no time limit by default, so a pooled connection whose peer has gone
+    // silent would block the borrowing thread, and the tree lock it holds, forever. Bound the
+    // validation unless the operator configured its timeout through the DBCP bypass.
+    if (!jdbcConfig.getAllConfig().containsKey(VALIDATION_QUERY_TIMEOUT_KEY)) {
+      basicDataSource.setValidationQueryTimeout(
+          JdbcConnectionTimeouts.validationTimeout(jdbcConfig));
+    }
     // Same precedence as maxIdle: keep a maxWaitMillis supplied through the DBCP bypass unless the
     // canonical setting is explicitly configured.
     if (jdbcConfig.getAllConfig().containsKey(JdbcConfig.POOL_MAX_WAIT_MS.getKey())
         || !jdbcConfig.getAllConfig().containsKey("maxWaitMillis")) {
       basicDataSource.setMaxWait(Duration.ofMillis(jdbcConfig.getMaxWaitMs()));
     }
-    // Apply the driver-aware connect/socket timeout as DBCP connection properties (not pool keys,
-    // so no collision with UNSAFE_POOL_PROPERTIES and the pool stays lazy). These bound a single
-    // connection and take effect on the first real connection — i.e. create-time verification — so
-    // an unreachable backend fails fast instead of hanging. Operator-set values are preserved.
+    // Apply the driver-aware connect/login/socket timeouts as DBCP connection properties (not pool
+    // keys, so no collision with UNSAFE_POOL_PROPERTIES and the pool stays lazy). These bound every
+    // pooled connection, so an unreachable backend fails fast and one that stops answering fails
+    // the operation instead of hanging it. Operator-set values are preserved.
     JdbcConnectionTimeouts.connectionProperties(jdbcConfig, jdbcUrl)
         .forEach(basicDataSource::addConnectionProperty);
     return basicDataSource;

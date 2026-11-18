@@ -143,6 +143,24 @@ public class TestDataSourceValidation {
     }
   }
 
+  /** Verifies the pool never validates a connection without a time limit. */
+  @Test
+  public void testValidationIsBoundedByDefault() {
+    try (BasicDataSource dataSource = createDataSource(Map.of())) {
+      Assertions.assertEquals(
+          Duration.ofSeconds(30), dataSource.getValidationQueryTimeoutDuration());
+    } catch (SQLException e) {
+      throw new AssertionError(e);
+    }
+    try (BasicDataSource dataSource =
+        createDataSource(Map.of(JdbcConfig.CONNECT_TIMEOUT_MS.getKey(), "500"))) {
+      Assertions.assertEquals(
+          Duration.ofSeconds(1), dataSource.getValidationQueryTimeoutDuration());
+    } catch (SQLException e) {
+      throw new AssertionError(e);
+    }
+  }
+
   /**
    * Verifies that for an unknown driver family (SQLite) no connect/socket timeout connection
    * property is injected and the datasource still builds and borrows a connection. This guards the

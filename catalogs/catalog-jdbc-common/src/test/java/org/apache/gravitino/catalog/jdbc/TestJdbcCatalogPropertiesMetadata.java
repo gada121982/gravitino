@@ -67,7 +67,8 @@ public class TestJdbcCatalogPropertiesMetadata {
             Map.of("jdbc.pool.min-size", "0"),
             Map.of("jdbc.pool.max-size", "-1"),
             Map.of("jdbc.pool.min-size", "5", "jdbc.pool.max-size", "2"),
-            Map.of("jdbc.pool.connect-timeout-ms", "2147483648"))) {
+            Map.of("jdbc.pool.connect-timeout-ms", "2147483648"),
+            Map.of("jdbc.pool.socket-timeout-ms", "-1"))) {
       Map<String, String> properties = poolWaitProperties();
       properties.put("verify-on-create", "false");
       properties.putAll(invalid);
@@ -325,6 +326,7 @@ public class TestJdbcCatalogPropertiesMetadata {
             .put(JdbcConfig.USERNAME.getKey(), "user")
             .put(JdbcConfig.PASSWORD.getKey(), "password")
             .put(JdbcConfig.CONNECT_TIMEOUT_MS.getKey(), "7500")
+            .put(JdbcConfig.SOCKET_TIMEOUT_MS.getKey(), "90000")
             .build();
 
     Map<String, String> transformed =
@@ -336,6 +338,8 @@ public class TestJdbcCatalogPropertiesMetadata {
     Assertions.assertFalse(
         new JdbcCatalogPropertiesMetadata()
             .isHiddenProperty(JdbcConfig.CONNECT_TIMEOUT_MS.getKey()));
+    Assertions.assertEquals(
+        90000L, new JdbcConfig(transformed).getSocketTimeoutMs(), "value must reach JdbcConfig");
   }
 
   /** Verifies the actual catalog configuration path for drivers without isValid support. */
