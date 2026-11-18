@@ -122,12 +122,12 @@ public class JdbcConfig extends Config {
    * org.apache.gravitino.catalog.jdbc.utils.JdbcConnectionTimeouts}.
    *
    * <p>It is applied differently to the two kinds of connection: the pooled connections used by
-   * normal operations get only the <em>connect</em> timeout (a read timeout there would abort
-   * legitimate long-running operations), while the one-off create-time verification probe gets both
-   * the <em>connect</em> and the <em>read/login</em> timeout, because that probe runs under the
-   * metalake write lock and a backend that accepts the socket but never speaks the protocol would
-   * otherwise block the connect-only bound forever. An operator value set directly on the
-   * connection or in the {@code jdbc-url} is never overridden.
+   * normal operations take their <em>connect</em> and <em>login</em> timeout, and the timeout of
+   * the pool's connection validation, from this value, and their <em>read</em> timeout from {@link
+   * #SOCKET_TIMEOUT_MS}; the one-off create-time verification probe takes all of them from this
+   * value, because that probe runs under the metalake write lock and a backend that accepts the
+   * socket but never speaks the protocol would otherwise block the connect-only bound forever. An
+   * operator value set directly on the connection or in the {@code jdbc-url} is never overridden.
    *
    * <p>The value is bounded by {@link Integer#MAX_VALUE} milliseconds to fit the drivers' integer
    * millisecond socket timeouts. PostgreSQL's whole-second timeout is capped before conversion back
@@ -146,6 +146,32 @@ public class JdbcConfig extends Config {
               value -> value > 0 && value <= Integer.MAX_VALUE,
               "The value must be a positive number not greater than " + Integer.MAX_VALUE)
           .createWithDefault(30000L);
+
+  /**
+   * The socket-read timeout, in milliseconds, of the pooled connections used by normal operations.
+   * Every catalog operation runs under the metadata tree lock, so a backend that stops answering on
+   * an open connection (a proxy or connection pooler in front of a dead or desynchronized server)
+   * would otherwise hold that lock forever and, once a write queues behind it, stall the whole
+   * metalake. It is translated per driver family by {@link
+   * org.apache.gravitino.catalog.jdbc.utils.JdbcConnectionTimeouts}; an operator value set in the
+   * {@code jdbc-url} or in the DBCP {@code connectionProperties} is never overridden.
+   *
+   * <p>The bound also applies to a statement that is legitimately slow, so raise it for a catalog
+   * that runs long DDL, or set it to {@code 0} to disable the read timeout for that catalog.
+   */
+  public static final ConfigEntry<Long> SOCKET_TIMEOUT_MS =
+      new ConfigBuilder("jdbc.pool.socket-timeout-ms")
+          .doc(
+              "The socket-read timeout of a pooled JDBC connection, in milliseconds (0.."
+                  + Integer.MAX_VALUE
+                  + "), translated per driver so a backend that stops answering fails the"
+                  + " operation instead of blocking it; 0 disables the read timeout")
+          .version(ConfigConstants.VERSION_2_0_0)
+          .longConf()
+          .checkValue(
+              value -> value >= 0 && value <= Integer.MAX_VALUE,
+              "The value must be a non-negative number not greater than " + Integer.MAX_VALUE)
+          .createWithDefault(60000L);
 
   /**
    * Whether a relational JDBC catalog verifies that its backend is reachable at create time. When
@@ -218,6 +244,15 @@ public class JdbcConfig extends Config {
    */
   public long getConnectTimeoutMs() {
     return get(CONNECT_TIMEOUT_MS);
+  }
+
+  /**
+   * Returns the socket-read timeout of a pooled JDBC connection, in milliseconds.
+   *
+   * @return the socket-read timeout in milliseconds, or 0 when the read timeout is disabled
+   */
+  public long getSocketTimeoutMs() {
+    return get(SOCKET_TIMEOUT_MS);
   }
 
   /**

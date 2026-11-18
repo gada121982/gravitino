@@ -18,6 +18,7 @@
  */
 package org.apache.gravitino.catalog.jdbc.utils;
 
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.apache.commons.lang3.StringUtils;
@@ -26,26 +27,27 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Translates the canonical {@link JdbcConfig#CONNECT_TIMEOUT_MS connect-timeout-ms} into the
- * driver-family connection properties that bound a JDBC connection, so an unreachable or silent
- * backend fails fast instead of hanging.
+ * Translates the canonical {@link JdbcConfig#CONNECT_TIMEOUT_MS connect-timeout-ms} and {@link
+ * JdbcConfig#SOCKET_TIMEOUT_MS socket-timeout-ms} into the driver-family connection properties that
+ * bound a JDBC connection, so an unreachable or silent backend fails instead of hanging.
  *
- * <p>Two translations are provided, because a pooled connection and the create-time verification
- * probe need different bounds:
+ * <p>Every connection is bounded on connect, login (PostgreSQL) and read, because every caller
+ * holds a metadata tree lock while it waits: a backend that accepts the TCP connection but never
+ * answers (a load balancer with a dead backend, a wrong port, a proxy or connection pooler that
+ * accepts and never forwards) would otherwise wait on the driver's default read timeout, which is
+ * "wait forever", and stall the whole metalake as soon as a write queues behind that lock. Two
+ * translations are provided, because the read bound differs:
  *
  * <ul>
  *   <li>{@link #connectionProperties} — used for the <b>pooled</b> connections of normal
- *       operations. It bounds only the <em>connection-establishment</em> timeout, deliberately not
- *       the socket-read timeout: a read timeout on the pool would also abort legitimate
- *       long-running operations on a healthy backend (a large {@code ALTER TABLE}, a slow metadata
- *       query).
+ *       operations. The connect and login timeouts come from {@code connect-timeout-ms}; the
+ *       socket-read timeout comes from {@code socket-timeout-ms}, which is separate and longer by
+ *       default because it also bounds a statement that is legitimately slow on a healthy backend
+ *       (a large {@code ALTER TABLE}, a slow metadata query). Setting it to 0 leaves the read
+ *       unbounded.
  *   <li>{@link #probeConnectionProperties} — used for the one-off <b>create-time verification
- *       probe</b>. It bounds the connect timeout <em>and</em> the socket-read (and, for PostgreSQL,
- *       login) timeout, because that probe runs under the metalake write lock: a backend that
- *       accepts the TCP connection but never speaks the database protocol (a load balancer with a
- *       dead backend, a wrong port, a proxy that accepts and never forwards) would otherwise make
- *       the connect-only bound wait on the driver's default read timeout, which is "wait forever",
- *       and hold the lock for the whole metalake.
+ *       probe</b>. All three timeouts come from {@code connect-timeout-ms}: the probe only opens
+ *       and validates a connection, so it has no slow statement to allow for.
  * </ul>
  *
  * <p>DBCP has no portable timeout; the real bound lives in the driver, and both the parameter name
@@ -118,28 +120,40 @@ public final class JdbcConnectionTimeouts {
   }
 
   /**
-   * Returns the driver-family <b>connect-timeout</b> connection property that bounds a pooled
-   * connection to the canonical {@link JdbcConfig#getConnectTimeoutMs()} value, or an empty map
-   * when the driver family is unknown or the operator has already set the connect timeout. Only the
-   * connect timeout is returned here; see {@link #probeConnectionProperties} for the create-time
-   * probe, which also bounds the read timeout.
+   * Returns the driver-family timeout connection properties that bound a pooled connection: the
+   * connect (and, for PostgreSQL, login) timeout from {@link JdbcConfig#getConnectTimeoutMs()} and
+   * the socket-read timeout from {@link JdbcConfig#getSocketTimeoutMs()}, which is omitted when
+   * that value is 0. Returns an empty map when the driver family is unknown or the operator has
+   * already set the properties.
    *
    * @param config the catalog JDBC configuration; must not be null
    * @param jdbcUrl the JDBC URL whose query parameters are inspected for operator-set timeouts; may
    *     be null or blank
-   * @return a map of connect-timeout property name to value, or an empty map
+   * @return a map of timeout property name to value, or an empty map
    */
   public static Map<String, String> connectionProperties(JdbcConfig config, String jdbcUrl) {
-    return timeoutProperties(config, jdbcUrl, false /* includeReadTimeout */);
+    return timeoutProperties(config, jdbcUrl, config.getSocketTimeoutMs());
+  }
+
+  /**
+   * Returns the time limit for the pool's connection validation, derived from {@link
+   * JdbcConfig#getConnectTimeoutMs()}. DBCP passes it to the driver in whole seconds and treats 0
+   * as "no limit", so the value is rounded up to at least one second.
+   *
+   * @param config the catalog JDBC configuration; must not be null
+   * @return the validation time limit, at least one second
+   */
+  public static Duration validationTimeout(JdbcConfig config) {
+    return Duration.ofSeconds(millisToSeconds(config.getConnectTimeoutMs()));
   }
 
   /**
    * Returns the driver-family <b>connect and read (and, for PostgreSQL, login)</b> timeout
    * connection properties that bound the one-off create-time verification probe to the canonical
    * {@link JdbcConfig#getConnectTimeoutMs()} value, or an empty map when the driver family is
-   * unknown or the operator has already set the properties. Bounding the read timeout here (but not
-   * on the pool, see {@link #connectionProperties}) ensures a backend that accepts the socket but
-   * never speaks the protocol fails the probe instead of blocking the metalake write lock forever.
+   * unknown or the operator has already set the properties. Bounding the read timeout ensures a
+   * backend that accepts the socket but never speaks the protocol fails the probe instead of
+   * blocking the metalake write lock forever.
    *
    * @param config the catalog JDBC configuration; must not be null
    * @param jdbcUrl the JDBC URL whose query parameters are inspected for operator-set timeouts; may
@@ -147,14 +161,14 @@ public final class JdbcConnectionTimeouts {
    * @return a map of timeout property name to value, or an empty map
    */
   public static Map<String, String> probeConnectionProperties(JdbcConfig config, String jdbcUrl) {
-    return timeoutProperties(config, jdbcUrl, true /* includeReadTimeout */);
+    return timeoutProperties(config, jdbcUrl, config.getConnectTimeoutMs());
   }
 
   private static Map<String, String> timeoutProperties(
-      JdbcConfig config, String jdbcUrl, boolean includeReadTimeout) {
+      JdbcConfig config, String jdbcUrl, long readMillis) {
     Map<String, String> properties = new LinkedHashMap<>();
     String driver = config.getJdbcDriver();
-    long millis = config.getConnectTimeoutMs();
+    long connectMillis = config.getConnectTimeoutMs();
 
     String connectParam;
     String readParam;
@@ -189,22 +203,27 @@ public final class JdbcConnectionTimeouts {
       return properties;
     }
 
-    String value = Long.toString(seconds ? millisToSeconds(millis) : millis);
-    addIfAbsent(properties, connectParam, value, config, jdbcUrl);
-    if (includeReadTimeout) {
-      addIfAbsent(properties, readParam, value, config, jdbcUrl);
-      if (loginParam != null) {
-        addIfAbsent(properties, loginParam, value, config, jdbcUrl);
-      }
+    String connectValue = driverValue(connectMillis, seconds);
+    addIfAbsent(properties, connectParam, connectValue, config, jdbcUrl);
+    if (loginParam != null) {
+      addIfAbsent(properties, loginParam, connectValue, config, jdbcUrl);
+    }
+    if (readMillis > 0) {
+      addIfAbsent(properties, readParam, driverValue(readMillis, seconds), config, jdbcUrl);
     }
     return properties;
+  }
+
+  private static String driverValue(long millis, boolean seconds) {
+    return Long.toString(seconds ? millisToSeconds(millis) : millis);
   }
 
   /**
    * Converts milliseconds to seconds, rounded up with a minimum of 1 so a sub-second bound never
    * collapses to 0 ("no timeout"). Cap the result at the largest whole-second timeout that the
    * PostgreSQL driver can multiply by 1000 without overflowing its integer millisecond timeout. The
-   * input is validated positive and {@code <= Integer.MAX_VALUE} by {@link JdbcConfig}.
+   * callers pass a positive value that {@link JdbcConfig} validated as {@code <=
+   * Integer.MAX_VALUE}.
    *
    * @param millis the timeout in milliseconds (positive)
    * @return the timeout in whole seconds, from 1 through {@code Integer.MAX_VALUE / 1000}

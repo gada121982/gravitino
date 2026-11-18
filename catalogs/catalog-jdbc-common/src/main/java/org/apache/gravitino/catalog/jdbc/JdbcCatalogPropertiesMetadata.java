@@ -52,6 +52,7 @@ public class JdbcCatalogPropertiesMetadata extends BaseCatalogPropertiesMetadata
           JdbcConfig.POOL_MAX_WAIT_MS.getKey(),
           JdbcConfig.TEST_ON_BORROW.getKey(),
           JdbcConfig.CONNECT_TIMEOUT_MS.getKey(),
+          JdbcConfig.SOCKET_TIMEOUT_MS.getKey(),
           JdbcConfig.VERIFY_ON_CREATE.getKey());
 
   static {
@@ -138,6 +139,12 @@ public class JdbcCatalogPropertiesMetadata extends BaseCatalogPropertiesMetadata
                 JdbcConfig.CONNECT_TIMEOUT_MS.getDoc(),
                 false /* immutable */,
                 JdbcConfig.CONNECT_TIMEOUT_MS.getDefaultValue(),
+                false /* hidden */),
+            longOptionalPropertyEntry(
+                JdbcConfig.SOCKET_TIMEOUT_MS.getKey(),
+                JdbcConfig.SOCKET_TIMEOUT_MS.getDoc(),
+                false /* immutable */,
+                JdbcConfig.SOCKET_TIMEOUT_MS.getDefaultValue(),
                 false /* hidden */),
             booleanPropertyEntry(
                 JdbcConfig.VERIFY_ON_CREATE.getKey(),

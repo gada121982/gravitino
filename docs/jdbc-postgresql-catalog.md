@@ -53,6 +53,7 @@ Besides the [common catalog properties](./gravitino-server-config.md#catalog-pro
 | `jdbc.pool.max-size`    | The maximum number of connections in the pool. `10` by default.                                                                                                                          | `10`          | No                             |
 | `jdbc.pool.max-idle`    | Maximum idle connections retained per catalog per server; capped by `jdbc.pool.max-size`; takes precedence over `gravitino.bypass.maxIdle`. Idle connections are not evicted by default. | `8`           | No                             |
 | `jdbc.pool.max-wait-ms` | The maximum Duration that the pool will wait for a connection to be returned; takes precedence over `gravitino.bypass.maxWaitMillis`.                                                    | `30000`       | No                             |
+| `jdbc.pool.socket-timeout-ms` | The socket-read timeout of a pooled connection, in milliseconds; `0` disables it. See [Bounded timeouts](./jdbc-catalog-connection-validation.md#bounded-timeouts). | `60000` | No |
 
 :::caution
 Download the corresponding JDBC driver to the `catalogs/jdbc-postgresql/libs` directory.
