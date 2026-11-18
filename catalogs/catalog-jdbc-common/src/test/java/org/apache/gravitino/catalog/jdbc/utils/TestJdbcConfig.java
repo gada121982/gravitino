@@ -89,4 +89,31 @@ public class TestJdbcConfig {
                         Long.toString((long) Integer.MAX_VALUE + 1L)))
                 .getConnectTimeoutMs());
   }
+
+  @Test
+  void testSocketTimeoutMs() {
+    Assertions.assertEquals(60000L, new JdbcConfig(Maps.newHashMap()).getSocketTimeoutMs());
+    Assertions.assertEquals(
+        5000L,
+        new JdbcConfig(ImmutableMap.of("jdbc.pool.socket-timeout-ms", "5000"))
+            .getSocketTimeoutMs());
+    // 0 is accepted: it disables the read timeout.
+    Assertions.assertEquals(
+        0L,
+        new JdbcConfig(ImmutableMap.of("jdbc.pool.socket-timeout-ms", "0")).getSocketTimeoutMs());
+
+    Assertions.assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            new JdbcConfig(ImmutableMap.of("jdbc.pool.socket-timeout-ms", "-1"))
+                .getSocketTimeoutMs());
+    Assertions.assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            new JdbcConfig(
+                    ImmutableMap.of(
+                        "jdbc.pool.socket-timeout-ms",
+                        Long.toString((long) Integer.MAX_VALUE + 1L)))
+                .getSocketTimeoutMs());
+  }
 }

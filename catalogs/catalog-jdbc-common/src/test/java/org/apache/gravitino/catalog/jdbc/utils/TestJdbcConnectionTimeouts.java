@@ -20,6 +20,7 @@
 package org.apache.gravitino.catalog.jdbc.utils;
 
 import com.google.common.collect.Maps;
+import java.time.Duration;
 import java.util.Map;
 import org.apache.gravitino.catalog.jdbc.config.JdbcConfig;
 import org.junit.jupiter.api.Assertions;
@@ -32,8 +33,10 @@ public class TestJdbcConnectionTimeouts {
   private static final String DRIVER_KEY = "jdbc-driver";
   private static final String URL_KEY = "jdbc-url";
   private static final String CONNECT_TIMEOUT_MS_KEY = "jdbc.pool.connect-timeout-ms";
+  private static final String SOCKET_TIMEOUT_MS_KEY = "jdbc.pool.socket-timeout-ms";
   private static final String CONNECT_TIMEOUT = "connectTimeout";
   private static final String SOCKET_TIMEOUT = "socketTimeout";
+  private static final String LOGIN_TIMEOUT = "loginTimeout";
   private static final String CLICKHOUSE_CONNECT_TIMEOUT = "connect_timeout";
   private static final String CLICKHOUSE_SOCKET_TIMEOUT = "socket_timeout";
 
@@ -42,7 +45,7 @@ public class TestJdbcConnectionTimeouts {
   }
 
   @Test
-  void testMysqlFamilyEmitsConnectTimeoutMillisOnly() {
+  void testMysqlFamilyEmitsConnectAndSocketTimeoutMillis() {
     for (String driver : new String[] {"com.mysql.cj.jdbc.Driver", "com.mysql.jdbc.Driver"}) {
       Map<String, String> props = Maps.newHashMap();
       props.put(DRIVER_KEY, driver);
@@ -51,10 +54,10 @@ public class TestJdbcConnectionTimeouts {
       Map<String, String> result =
           JdbcConnectionTimeouts.connectionProperties(config(props), props.get(URL_KEY));
 
-      // Only the connect timeout is emitted (never a socket-read timeout), as milliseconds.
+      // The pool bounds both the connect and the read, each from its own setting, as milliseconds.
       Assertions.assertEquals("30000", result.get(CONNECT_TIMEOUT), driver);
-      Assertions.assertFalse(result.containsKey(SOCKET_TIMEOUT), driver);
-      Assertions.assertEquals(1, result.size(), driver);
+      Assertions.assertEquals("60000", result.get(SOCKET_TIMEOUT), driver);
+      Assertions.assertEquals(2, result.size(), driver);
     }
   }
 
@@ -69,8 +72,8 @@ public class TestJdbcConnectionTimeouts {
         JdbcConnectionTimeouts.connectionProperties(config(props), props.get(URL_KEY));
 
     Assertions.assertEquals("30000", result.get(CONNECT_TIMEOUT));
-    Assertions.assertFalse(result.containsKey(SOCKET_TIMEOUT));
-    Assertions.assertEquals(1, result.size());
+    Assertions.assertEquals("60000", result.get(SOCKET_TIMEOUT));
+    Assertions.assertEquals(2, result.size());
   }
 
   @Test
@@ -83,12 +86,13 @@ public class TestJdbcConnectionTimeouts {
     Map<String, String> result =
         JdbcConnectionTimeouts.connectionProperties(config(props), props.get(URL_KEY));
 
-    // ClickHouse uses the snake_case name and milliseconds; the camelCase name must NOT be emitted,
-    // and no socket-read timeout is emitted.
+    // ClickHouse uses the snake_case names and milliseconds; the camelCase names must NOT be
+    // emitted.
     Assertions.assertEquals("7500", result.get(CLICKHOUSE_CONNECT_TIMEOUT));
-    Assertions.assertFalse(result.containsKey(CLICKHOUSE_SOCKET_TIMEOUT));
+    Assertions.assertEquals("60000", result.get(CLICKHOUSE_SOCKET_TIMEOUT));
     Assertions.assertFalse(result.containsKey(CONNECT_TIMEOUT));
-    Assertions.assertEquals(1, result.size());
+    Assertions.assertFalse(result.containsKey(SOCKET_TIMEOUT));
+    Assertions.assertEquals(2, result.size());
   }
 
   @Test
@@ -100,8 +104,8 @@ public class TestJdbcConnectionTimeouts {
 
     Map<String, String> result = JdbcConnectionTimeouts.connectionProperties(config(props), url);
 
-    // The operator's connect_timeout wins, so nothing is injected.
-    Assertions.assertTrue(result.isEmpty());
+    // The operator's connect_timeout wins, so only the read timeout is injected.
+    Assertions.assertEquals(Map.of(CLICKHOUSE_SOCKET_TIMEOUT, "60000"), result);
   }
 
   @Test
@@ -115,9 +119,8 @@ public class TestJdbcConnectionTimeouts {
     Map<String, String> result =
         JdbcConnectionTimeouts.connectionProperties(config(props), props.get(URL_KEY));
 
-    Assertions.assertEquals("5", result.get(CONNECT_TIMEOUT));
-    Assertions.assertFalse(result.containsKey(SOCKET_TIMEOUT));
-    Assertions.assertEquals(1, result.size());
+    Assertions.assertEquals(
+        Map.of(CONNECT_TIMEOUT, "5", LOGIN_TIMEOUT, "5", SOCKET_TIMEOUT, "60"), result);
   }
 
   @Test
@@ -149,7 +152,8 @@ public class TestJdbcConnectionTimeouts {
       int driverMillis = Math.multiplyExact(Integer.parseInt(seconds), 1000);
       Assertions.assertTrue(driverMillis > 0, "driver timeout must remain positive");
     }
-    Assertions.assertEquals(Map.of(CONNECT_TIMEOUT, "2147483"), pooled);
+    Assertions.assertEquals(
+        Map.of(CONNECT_TIMEOUT, "2147483", LOGIN_TIMEOUT, "2147483", SOCKET_TIMEOUT, "60"), pooled);
     Assertions.assertEquals(
         Map.of(CONNECT_TIMEOUT, "2147483", SOCKET_TIMEOUT, "2147483", "loginTimeout", "2147483"),
         probe);
@@ -165,7 +169,7 @@ public class TestJdbcConnectionTimeouts {
         JdbcConnectionTimeouts.connectionProperties(config(props), props.get(URL_KEY));
 
     Assertions.assertEquals(expectedSeconds, result.get(CONNECT_TIMEOUT), millis);
-    Assertions.assertFalse(result.containsKey(SOCKET_TIMEOUT), millis);
+    Assertions.assertEquals(expectedSeconds, result.get(LOGIN_TIMEOUT), millis);
   }
 
   @Test
@@ -191,8 +195,8 @@ public class TestJdbcConnectionTimeouts {
     Map<String, String> result =
         JdbcConnectionTimeouts.connectionProperties(config(props), props.get(URL_KEY));
 
-    // The operator's connectTimeout wins, so nothing is injected (no overwrite).
-    Assertions.assertTrue(result.isEmpty());
+    // The operator's connectTimeout wins (no overwrite), so only the read timeout is injected.
+    Assertions.assertEquals(Map.of(SOCKET_TIMEOUT, "60000"), result);
   }
 
   @Test
@@ -208,7 +212,7 @@ public class TestJdbcConnectionTimeouts {
         JdbcConnectionTimeouts.connectionProperties(config(props), props.get(URL_KEY));
 
     Assertions.assertEquals("30000", result.get(CONNECT_TIMEOUT));
-    Assertions.assertEquals(1, result.size());
+    Assertions.assertEquals(2, result.size());
   }
 
   @Test
@@ -220,7 +224,7 @@ public class TestJdbcConnectionTimeouts {
 
     Map<String, String> result = JdbcConnectionTimeouts.connectionProperties(config(props), url);
 
-    Assertions.assertTrue(result.isEmpty());
+    Assertions.assertEquals(Map.of(SOCKET_TIMEOUT, "60000"), result);
   }
 
   @Test
@@ -235,7 +239,7 @@ public class TestJdbcConnectionTimeouts {
     Map<String, String> result = JdbcConnectionTimeouts.connectionProperties(config(props), url);
 
     Assertions.assertEquals("30000", result.get(CONNECT_TIMEOUT));
-    Assertions.assertEquals(1, result.size());
+    Assertions.assertEquals(2, result.size());
   }
 
   @Test
@@ -249,7 +253,69 @@ public class TestJdbcConnectionTimeouts {
         JdbcConnectionTimeouts.connectionProperties(config(props), props.get(URL_KEY));
 
     Assertions.assertEquals("7500", result.get(CONNECT_TIMEOUT));
-    Assertions.assertEquals(1, result.size());
+    Assertions.assertEquals("60000", result.get(SOCKET_TIMEOUT));
+    Assertions.assertEquals(2, result.size());
+  }
+
+  @Test
+  void testCustomSocketTimeoutPropagatesInDriverUnit() {
+    Map<String, String> mysql = Maps.newHashMap();
+    mysql.put(DRIVER_KEY, "com.mysql.cj.jdbc.Driver");
+    mysql.put(URL_KEY, "jdbc:mysql://host:3306/db");
+    mysql.put(SOCKET_TIMEOUT_MS_KEY, "1500");
+    Assertions.assertEquals(
+        "1500",
+        JdbcConnectionTimeouts.connectionProperties(config(mysql), mysql.get(URL_KEY))
+            .get(SOCKET_TIMEOUT));
+
+    // PostgreSQL takes whole seconds, rounded up so a sub-second bound never becomes "no timeout".
+    Map<String, String> postgres = Maps.newHashMap();
+    postgres.put(DRIVER_KEY, "org.postgresql.Driver");
+    postgres.put(URL_KEY, "jdbc:postgresql://host:5432/db");
+    postgres.put(SOCKET_TIMEOUT_MS_KEY, "1500");
+    Assertions.assertEquals(
+        Map.of(CONNECT_TIMEOUT, "30", LOGIN_TIMEOUT, "30", SOCKET_TIMEOUT, "2"),
+        JdbcConnectionTimeouts.connectionProperties(config(postgres), postgres.get(URL_KEY)));
+  }
+
+  @Test
+  void testZeroSocketTimeoutLeavesPooledReadUnbounded() {
+    Map<String, String> props = Maps.newHashMap();
+    props.put(DRIVER_KEY, "org.postgresql.Driver");
+    props.put(URL_KEY, "jdbc:postgresql://host:5432/db");
+    props.put(SOCKET_TIMEOUT_MS_KEY, "0");
+
+    Map<String, String> pooled =
+        JdbcConnectionTimeouts.connectionProperties(config(props), props.get(URL_KEY));
+    Map<String, String> probe =
+        JdbcConnectionTimeouts.probeConnectionProperties(config(props), props.get(URL_KEY));
+
+    // 0 disables only the pooled read timeout; connect and login stay bounded, and so does the
+    // create-time probe, which never takes its read timeout from this setting.
+    Assertions.assertEquals(Map.of(CONNECT_TIMEOUT, "30", LOGIN_TIMEOUT, "30"), pooled);
+    Assertions.assertEquals("30", probe.get(SOCKET_TIMEOUT));
+  }
+
+  @Test
+  void testOperatorSocketTimeoutIsPreservedForPool() {
+    Map<String, String> props = Maps.newHashMap();
+    props.put(DRIVER_KEY, "org.postgresql.Driver");
+    String url = "jdbc:postgresql://host:5432/db?socketTimeout=600";
+    props.put(URL_KEY, url);
+
+    Map<String, String> result = JdbcConnectionTimeouts.connectionProperties(config(props), url);
+
+    Assertions.assertEquals(Map.of(CONNECT_TIMEOUT, "30", LOGIN_TIMEOUT, "30"), result);
+  }
+
+  @Test
+  void testValidationTimeoutRoundsUpToWholeSeconds() {
+    Assertions.assertEquals(
+        Duration.ofSeconds(30), JdbcConnectionTimeouts.validationTimeout(config(Map.of())));
+    // DBCP hands whole seconds to the driver and reads 0 as "no limit".
+    Assertions.assertEquals(
+        Duration.ofSeconds(1),
+        JdbcConnectionTimeouts.validationTimeout(config(Map.of(CONNECT_TIMEOUT_MS_KEY, "500"))));
   }
 
   @Test
@@ -260,7 +326,7 @@ public class TestJdbcConnectionTimeouts {
     Map<String, String> result = JdbcConnectionTimeouts.connectionProperties(config(props), null);
 
     Assertions.assertEquals("30", result.get(CONNECT_TIMEOUT));
-    Assertions.assertEquals(1, result.size());
+    Assertions.assertEquals(3, result.size());
   }
 
   @Test

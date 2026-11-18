@@ -84,10 +84,16 @@ the check is skipped.
 
 ### Bounded timeouts
 
-So that create-time verification fails fast instead of hanging, the timeout
-`jdbc.pool.connect-timeout-ms` (default `30000` ms, maximum `2147483647`) bounds a JDBC connection.
-Gravitino translates this canonical millisecond value into each driver family's own parameters and
-unit:
+Every catalog operation holds a metadata tree lock while it waits on the backend, so no JDBC
+connection may wait forever. Two settings bound a connection:
+
+- `jdbc.pool.connect-timeout-ms` (default `30000` ms, maximum `2147483647`) bounds opening a
+  connection, and the pool's connection validation.
+- `jdbc.pool.socket-timeout-ms` (default `60000` ms, maximum `2147483647`, `0` disables it) bounds
+  each read on a pooled connection.
+
+Gravitino translates these canonical millisecond values into each driver family's own parameters
+and unit:
 
 - MySQL Connector/J — also used by the Doris, StarRocks, and OceanBase catalogs: `connectTimeout`
   and `socketTimeout` in milliseconds.
@@ -97,20 +103,28 @@ unit:
   upper bound, it shortens the configured timeout by less than one second.
 - ClickHouse: `connect_timeout` and `socket_timeout` in milliseconds (note the underscore names).
 
-It is applied differently to the two kinds of connection:
+They are applied differently to the two kinds of connection:
 
-- **Pooled connections** (normal operations) get only the **connect** timeout. A socket-read
-  timeout is deliberately not imposed there, because it would also abort legitimate long-running
-  operations on a healthy backend (a large `ALTER TABLE`, a slow metadata query).
-- **The create-time verification probe** gets both the **connect** and the **read** (and, for
-  PostgreSQL, **login**) timeout. The probe runs under the metalake write lock, so it must be fully
-  bounded: a backend that accepts the TCP connection but never speaks the database protocol (a load
-  balancer with a dead backend, a wrong port, a proxy that accepts and never forwards) would
-  otherwise block a connect-only bound forever and stall the whole metalake.
+- **Pooled connections** (normal operations) get the **connect** (and, for PostgreSQL, **login**)
+  timeout from `jdbc.pool.connect-timeout-ms` and the **read** timeout from
+  `jdbc.pool.socket-timeout-ms`. The read timeout is a separate, longer setting because it also
+  ends a statement that is legitimately slow on a healthy backend (a large `ALTER TABLE`, a slow
+  metadata query): raise it for a catalog that runs such statements, or set it to `0` to leave
+  that catalog's reads unbounded. The pool also validates a connection before handing it out;
+  that validation is limited to `jdbc.pool.connect-timeout-ms` (rounded up to whole seconds)
+  unless the DBCP `validationQueryTimeout` property is set.
+- **The create-time verification probe** gets the **connect**, **read** and (for PostgreSQL)
+  **login** timeout from `jdbc.pool.connect-timeout-ms`. The probe only opens and validates a
+  connection, so it has no slow statement to allow for.
+
+Without the read bound, a backend that accepts the TCP connection but stops answering (a load
+balancer with a dead backend, a wrong port, a proxy or connection pooler that accepts and never
+forwards) blocks the operation forever, and the whole metalake as soon as a write queues behind
+its lock.
 
 A timeout value you set directly on the connection or in the `jdbc-url` query string is never
-overridden; drivers whose family is not recognized are left unbounded by Gravitino. The pooled
-timeout is applied as a per-connection bound, so the pool stays lazy and no connection is opened
+overridden; drivers whose family is not recognized get only the validation limit. The pooled
+timeouts are applied as per-connection bounds, so the pool stays lazy and no connection is opened
 until the first real round trip.
 
 ## Driver adapter for physical connection deadlines
