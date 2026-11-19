@@ -430,6 +430,39 @@ public class TestGravitinoDriverPlugin {
   }
 
   @Test
+  void testAccessDelegationFollowsCatalogDataAccess() {
+    Assertions.assertEquals(
+        "vended-credentials",
+        GravitinoDriverPlugin.accessDelegation(
+            Collections.singletonMap("data-access", " Vended-Credentials ")));
+    // Unset, unknown or explicit remote signing: the engine never asks for credentials.
+    Assertions.assertEquals("remote-signing", GravitinoDriverPlugin.accessDelegation(null));
+    Assertions.assertEquals(
+        "remote-signing", GravitinoDriverPlugin.accessDelegation(Collections.emptyMap()));
+    Assertions.assertEquals(
+        "remote-signing",
+        GravitinoDriverPlugin.accessDelegation(
+            Collections.singletonMap("data-access", "remote-signing")));
+    Assertions.assertEquals(
+        "remote-signing",
+        GravitinoDriverPlugin.accessDelegation(Collections.singletonMap("data-access", "other")));
+
+    Map<String, String> conf =
+        GravitinoDriverPlugin.icebergRestCatalogConf(
+            "sales",
+            "lake",
+            "https://rest.example.com/iceberg/",
+            "client:secret",
+            "https://idp.example.com",
+            "realms/r/protocol/openid-connect/token",
+            "gravitino",
+            "vended-credentials");
+    Assertions.assertEquals(
+        "vended-credentials",
+        conf.get("spark.sql.catalog.sales.header.X-Iceberg-Access-Delegation"));
+  }
+
+  @Test
   void testIcebergRestCatalogConfJoinsTokenPathWithoutDoubleSlash() {
     Map<String, String> conf =
         GravitinoDriverPlugin.icebergRestCatalogConf(
