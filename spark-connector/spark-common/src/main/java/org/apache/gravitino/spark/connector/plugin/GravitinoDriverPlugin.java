@@ -95,6 +95,8 @@ public class GravitinoDriverPlugin implements DriverPlugin {
   private static final String ICEBERG_ACCESS_DELEGATION_HEADER =
       "header.X-Iceberg-Access-Delegation";
   private static final String ICEBERG_REMOTE_SIGNING = "remote-signing";
+  private static final String ICEBERG_VENDED_CREDENTIALS = "vended-credentials";
+  private static final String ICEBERG_DATA_ACCESS_PROPERTY = "data-access";
 
   private final SparkBindings bindings;
   private final List<String> gravitinoIcebergExtensions =
@@ -239,7 +241,8 @@ public class GravitinoDriverPlugin implements DriverPlugin {
               }
               try {
                 if (SparkCatalogKind.LAKEHOUSE_ICEBERG.equals(kind) && icebergRestEagerRegister) {
-                  registerIcebergRestCatalog(sparkConf, catalogName);
+                  registerIcebergRestCatalog(
+                      sparkConf, catalogName, accessDelegation(gravitinoCatalog.properties()));
                 } else {
                   registerCatalog(sparkConf, catalogName, kind);
                 }
@@ -323,7 +326,22 @@ public class GravitinoDriverPlugin implements DriverPlugin {
     gravitinoDriverExtensions.addAll(gravitinoPaimonExtensions);
   }
 
-  private void registerIcebergRestCatalog(SparkConf sparkConf, String catalogName) {
+  /**
+   * The access delegation to ask an Iceberg catalog for, from its {@code data-access} property.
+   * Remote signing is the default: a catalog without the property, or with a value this engine
+   * does not know, must not make the engine ask for storage credentials.
+   */
+  @VisibleForTesting
+  static String accessDelegation(Map<String, String> catalogProperties) {
+    String dataAccess =
+        catalogProperties == null ? null : catalogProperties.get(ICEBERG_DATA_ACCESS_PROPERTY);
+    return dataAccess != null && ICEBERG_VENDED_CREDENTIALS.equalsIgnoreCase(dataAccess.trim())
+        ? ICEBERG_VENDED_CREDENTIALS
+        : ICEBERG_REMOTE_SIGNING;
+  }
+
+  private void registerIcebergRestCatalog(
+      SparkConf sparkConf, String catalogName, String accessDelegation) {
     String sparkCatalogConfigName = SPARK_CATALOG_PREFIX + catalogName;
     Preconditions.checkArgument(
         !sparkConf.contains(sparkCatalogConfigName),
@@ -335,7 +353,8 @@ public class GravitinoDriverPlugin implements DriverPlugin {
             sparkConf.get(GravitinoSparkConfig.GRAVITINO_OAUTH2_CREDENTIAL, ""),
             sparkConf.get(GravitinoSparkConfig.GRAVITINO_OAUTH2_URI, ""),
             sparkConf.get(GravitinoSparkConfig.GRAVITINO_OAUTH2_PATH, ""),
-            sparkConf.get(GravitinoSparkConfig.GRAVITINO_OAUTH2_SCOPE, ""))
+            sparkConf.get(GravitinoSparkConfig.GRAVITINO_OAUTH2_SCOPE, ""),
+            accessDelegation)
         .forEach(sparkConf::set);
     LOG.info(
         "Register {} catalog to Spark catalog manager as an Iceberg REST catalog.", catalogName);
@@ -356,13 +375,38 @@ public class GravitinoDriverPlugin implements DriverPlugin {
       String oauth2ServerUri,
       String oauth2TokenPath,
       String oauth2Scope) {
+    return icebergRestCatalogConf(
+        catalogName,
+        metalake,
+        restUri,
+        credential,
+        oauth2ServerUri,
+        oauth2TokenPath,
+        oauth2Scope,
+        ICEBERG_REMOTE_SIGNING);
+  }
+
+  /**
+   * As above, with the access delegation the catalog expects: {@code remote-signing}, or {@code
+   * vended-credentials} for a catalog whose server returns a short-lived token with each table.
+   */
+  @VisibleForTesting
+  static Map<String, String> icebergRestCatalogConf(
+      String catalogName,
+      String metalake,
+      String restUri,
+      String credential,
+      String oauth2ServerUri,
+      String oauth2TokenPath,
+      String oauth2Scope,
+      String accessDelegation) {
     String prefix = SPARK_CATALOG_PREFIX + catalogName;
     Map<String, String> catalogConf = new LinkedHashMap<>();
     catalogConf.put(prefix, ICEBERG_REST_CATALOG_CLASS);
     catalogConf.put(prefix + ".type", "rest");
     catalogConf.put(prefix + ".uri", restUri);
     catalogConf.put(prefix + ".warehouse", metalake + "." + catalogName);
-    catalogConf.put(prefix + "." + ICEBERG_ACCESS_DELEGATION_HEADER, ICEBERG_REMOTE_SIGNING);
+    catalogConf.put(prefix + "." + ICEBERG_ACCESS_DELEGATION_HEADER, accessDelegation);
     if (BearerCredentials.isBearerToken(credential)) {
       // The run-as user's access token. Iceberg sends it as-is; it cannot refresh it (there is no
       // secret to exchange), so refreshing is turned off and a run outliving it fails.
