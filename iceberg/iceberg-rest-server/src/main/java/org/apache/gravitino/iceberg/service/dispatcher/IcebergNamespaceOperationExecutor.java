@@ -164,8 +164,7 @@ public class IcebergNamespaceOperationExecutor implements IcebergNamespaceOperat
         registerTableRequest instanceof RegisterTableRequestWithMetadata
             ? registerTableRequest
             : new RegisterTableRequestWithMetadata(registerTableRequest, metadata);
-    return catalogWrapper.registerTable(
-        namespace, loadedRequest, context.accessDelegation());
+    return catalogWrapper.registerTable(namespace, loadedRequest, context.accessDelegation());
   }
 
   @Override
