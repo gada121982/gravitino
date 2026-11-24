@@ -349,8 +349,8 @@ public class GravitinoDriverPlugin implements DriverPlugin {
 
   /**
    * The access delegation to ask an Iceberg catalog for, from its {@code data-access} property.
-   * Remote signing is the default: a catalog without the property, or with a value this engine
-   * does not know, must not make the engine ask for storage credentials.
+   * Remote signing is the default: a catalog without the property, or with a value this engine does
+   * not know, must not make the engine ask for storage credentials.
    */
   @VisibleForTesting
   static String accessDelegation(Map<String, String> catalogProperties) {
@@ -685,12 +685,12 @@ public class GravitinoDriverPlugin implements DriverPlugin {
   }
 
   /**
-   * Iceberg catalogs can be registered as plain Iceberg REST catalogs pointed at Gravitino's Iceberg
-   * REST service instead of going through this connector. Registering them while the driver is still
-   * building its SparkContext keeps every access path working, including the DataFrame ones that
-   * never reach a SQL parser. Only enable this where the OAuth2 credential already in SparkConf
-   * belongs to the identity the job runs as; a shared engine serving several users must keep
-   * resolving credentials per session instead.
+   * Iceberg catalogs can be registered as plain Iceberg REST catalogs pointed at Gravitino's
+   * Iceberg REST service instead of going through this connector. Registering them while the driver
+   * is still building its SparkContext keeps every access path working, including the DataFrame
+   * ones that never reach a SQL parser. Only enable this where the OAuth2 credential already in
+   * SparkConf belongs to the identity the job runs as; a shared engine serving several users must
+   * keep resolving credentials per session instead.
    */
   private void configureIcebergRestEagerRegister(SparkConf conf) {
     this.metalakeName = conf.get(GravitinoSparkConfig.GRAVITINO_METALAKE, "");
