@@ -2390,7 +2390,9 @@ public class TestCatalogWrapperForREST {
 
   @Test
   void testFederatedStagedCreateRejectsV3TypeWithoutFormatVersion3() {
-    RESTCatalog catalog = mock(RESTCatalog.class);
+    // A REST catalog forwards the staged-create commit verbatim (proxyTableUpdate), so the
+    // staged-create validation under test is reached through a non-REST catalog.
+    Catalog catalog = mock(Catalog.class);
     IcebergConfig config =
         new IcebergConfig(
             ImmutableMap.of(
@@ -2418,7 +2420,9 @@ public class TestCatalogWrapperForREST {
 
   @Test
   void testFederatedStagedCreateAllowsAddSchemaBeforeUpgradeFormatVersion() {
-    RESTCatalog catalog = mock(RESTCatalog.class);
+    // A REST catalog forwards the staged-create commit verbatim (proxyTableUpdate), so the
+    // staged-create validation under test is reached through a non-REST catalog.
+    Catalog catalog = mock(Catalog.class);
     Catalog.TableBuilder tableBuilder = mock(Catalog.TableBuilder.class);
     BaseTransaction baseTransaction = mock(BaseTransaction.class);
     TableOperations ops = mock(TableOperations.class);
@@ -2478,7 +2482,9 @@ public class TestCatalogWrapperForREST {
 
   @Test
   void testFederatedStagedCreateAllowsV3TypeWithFormatVersion3() {
-    RESTCatalog catalog = mock(RESTCatalog.class);
+    // A REST catalog forwards the staged-create commit verbatim (proxyTableUpdate), so the
+    // staged-create validation under test is reached through a non-REST catalog.
+    Catalog catalog = mock(Catalog.class);
     Catalog.TableBuilder tableBuilder = mock(Catalog.TableBuilder.class);
     BaseTransaction baseTransaction = mock(BaseTransaction.class);
     TableOperations ops = mock(TableOperations.class);
